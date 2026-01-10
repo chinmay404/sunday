@@ -20,3 +20,24 @@ Run the main script:
 ```bash
 python3 llm/main.py
 ```
+
+## Running the API
+
+Start the FastAPI server:
+```bash
+python3 llm/api.py
+```
+or directly with uvicorn:
+```bash
+uvicorn llm.api:app --reload
+```
+
+The API will be available at `http://localhost:8000`.
+You can access the interactive documentation at `http://localhost:8000/docs`.
+
+### Test the API
+```bash
+curl -X POST "http://localhost:8000/chat" \
+     -H "Content-Type: application/json" \
+     -d '{"message": "Hello Sunday", "thread_id": "test-1"}'
+```

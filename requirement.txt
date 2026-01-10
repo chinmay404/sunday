@@ -18,6 +18,8 @@ setuptools
 google-api-python-client
 google-auth-httplib2 
 google-auth-oauthlib
+fastapi
+uvicorn
 chromadb
 sentence-transformers
 neo4j

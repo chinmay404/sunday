@@ -30,5 +30,7 @@ class ChatState(TypedDict):
     messages:  Annotated[list[AnyMessage],add_messages]
     Action_decided: NotRequired[Optional[ActionDecided]]
     memory_context: NotRequired[Optional[str]]
+    system_prompt: NotRequired[str]
+    platform: NotRequired[str]
 
 
