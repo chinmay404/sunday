@@ -169,3 +169,4 @@ client.on('message_create', async msg => {
     }
 });
 /* Lines 42-90 omitted for brevity (old code replacement) */
+client.initialize();
