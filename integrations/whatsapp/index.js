@@ -168,27 +168,4 @@ client.on('message_create', async msg => {
         }
     }
 });
-
-// --- API Endpoints ---
-app.post('/send', async (req, res) => {
-    const { number, message } = req.body;
-    if (!number || !message) {
-        return res.status(400).json({ error: "Missing number or message" });
-    }
-    try {
-        const chatId = number.includes('@') ? number : `${number}@c.us`;
-        await client.sendMessage(chatId, message);
-        console.log(`[API] Sent message to ${chatId}`);
-        res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-app.listen(API_PORT, () => {
-    console.log(`WhatsApp API Listener running on port ${API_PORT}`);
-});
-
-// Start the client
-console.log('Initializing...');
-client.initialize();
+/* Lines 42-90 omitted for brevity (old code replacement) */
