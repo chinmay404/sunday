@@ -21,13 +21,13 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
-
+contacts.vcf
 # Virtual Environment
 venv/
 .venv/
 env/
 .env
-
+node_modules
 # Editor directories
 .vscode/
 .idea/

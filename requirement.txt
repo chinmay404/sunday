@@ -34,3 +34,7 @@ google-genai
 langchain-google-genai
 pgvector
 psycopg2-binary
+fastapi
+uvicorn
+requests
+vobject
