@@ -1,4 +1,5 @@
 import json
+import os
 import concurrent.futures
 from typing import Optional, List
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
@@ -9,6 +10,11 @@ from llm.graph.memory.semantic_memory import SemanticMemory
 from llm.graph.model.llm import get_llm
 
 SUMMARY_TAG = "[Conversation Summary]"
+
+SUMMARY_ENABLE = os.getenv("SUMMARY_ENABLE", "true").strip().lower() not in {"0", "false", "no", "off"}
+SUMMARY_EVERY_TURNS = int(os.getenv("SUMMARY_EVERY_TURNS", "10"))
+SUMMARY_CHAR_LIMIT = int(os.getenv("SUMMARY_CHAR_LIMIT", "4000"))
+SUMMARY_WINDOW_TURNS = int(os.getenv("SUMMARY_WINDOW_TURNS", "10"))
 
 # Initialize Memories
 try:
@@ -44,33 +50,45 @@ def memory_processing_node(state: ChatState):
     messages = state.get("messages", [])
     if len(messages) < 2: return {}
 
-    # Summarize every 5 messages (human+AI turns) and append as a SystemMessage for continuity.
+    # Summarize periodically (human+AI turns) and append as a SystemMessage for continuity.
     # This summary is NOT stored in episodic memory; it just lives in conversation history.
-    human_ai_messages = [m for m in messages if isinstance(m, (HumanMessage, AIMessage))]
     summary_msg = None
-    if len(human_ai_messages) % 5 == 0:
-        # Take the last 5 human/AI messages for the summary window
-        window = human_ai_messages[-5:]
-        window_text = "\n".join(
-            [
-                ("User: " + m.content) if isinstance(m, HumanMessage) else ("Sunday: " + m.content)
-                for m in window
-            ]
-        )
-        llm = get_llm()
-        if llm:
-            try:
-                prompt = (
-                    "Summarize the last 5 turns concisely. Capture intents, decisions, and follow-ups. "
-                    "Keep it short and actionable."
-                )
-                summary_text = llm.invoke([
-                    SystemMessage(content=prompt),
-                    HumanMessage(content=window_text)
-                ]).content
-                summary_msg = SystemMessage(content=f"{SUMMARY_TAG} {summary_text}")
-            except Exception as e:
-                print(f"Error generating summary: {e}")
+    if SUMMARY_ENABLE:
+        last_summary_index = None
+        for idx in range(len(messages) - 1, -1, -1):
+            msg = messages[idx]
+            if isinstance(msg, SystemMessage) and msg.content.startswith(SUMMARY_TAG):
+                last_summary_index = idx
+                break
+
+        recent_messages = messages[last_summary_index + 1:] if last_summary_index is not None else messages
+        recent_human_ai = [m for m in recent_messages if isinstance(m, (HumanMessage, AIMessage))]
+        recent_char_count = sum(len(m.content or "") for m in recent_human_ai)
+
+        if recent_human_ai and (
+            len(recent_human_ai) >= SUMMARY_EVERY_TURNS or recent_char_count >= SUMMARY_CHAR_LIMIT
+        ):
+            window = recent_human_ai[-SUMMARY_WINDOW_TURNS:]
+            window_text = "\n".join(
+                [
+                    ("User: " + m.content) if isinstance(m, HumanMessage) else ("Sunday: " + m.content)
+                    for m in window
+                ]
+            )
+            llm = get_llm()
+            if llm:
+                try:
+                    prompt = (
+                        "Summarize the recent conversation concisely. Capture intents, decisions, and follow-ups. "
+                        "Keep it short and actionable."
+                    )
+                    summary_text = llm.invoke([
+                        SystemMessage(content=prompt),
+                        HumanMessage(content=window_text)
+                    ]).content
+                    summary_msg = SystemMessage(content=f"{SUMMARY_TAG} {summary_text}")
+                except Exception as e:
+                    print(f"Error generating summary: {e}")
 
     last_human = None
     last_ai = None

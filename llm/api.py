@@ -12,7 +12,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from llm.graph.graph import create_graph
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage
 import uvicorn
 from contextlib import asynccontextmanager
 
@@ -84,8 +84,11 @@ def chat(request: ChatRequest):
         # Invoke the graph synchronously
         result = graph.invoke(initial_state, config=config)
         
-        last_message = result["messages"][-1]
-        content = last_message.content if hasattr(last_message, 'content') else str(last_message)
+        last_ai = next(
+            (m for m in reversed(result.get("messages", [])) if isinstance(m, AIMessage)),
+            None,
+        )
+        content = last_ai.content if last_ai and hasattr(last_ai, "content") else ""
         
         return ChatResponse(response=content)
     except Exception as e:

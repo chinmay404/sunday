@@ -7,7 +7,7 @@ import requests
 import sqlite3
 from pathlib import Path
 from dotenv import load_dotenv
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage
 from langgraph.checkpoint.sqlite import SqliteSaver
 from typing import Optional, Tuple
 
@@ -67,9 +67,9 @@ def process_message(token, graph, message_data):
         
         # Extract response from the last AI message
         messages = result.get("messages", [])
-        if messages:
-            last_message = messages[-1]
-            response_text = last_message.content
+        last_ai = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
+        if last_ai:
+            response_text = last_ai.content
             
             # Send response back to Telegram
             send_message(token, chat_id, response_text, None, False)

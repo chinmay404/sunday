@@ -8,7 +8,7 @@ if str(root_dir) not in sys.path:
 
 from llm.graph.graph import create_graph
 from integrations.telegram.run_bot import start_polling
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage
 
 def main():
     graph = create_graph()
@@ -31,9 +31,12 @@ def main():
         # Invoke with config so the checkpointer loads/saves this thread
         result = graph.invoke(initial_state, config=config)
         
-        last_message = result["messages"][-1]
-        if hasattr(last_message, 'content') and last_message.content:
-             print(f"Sunday: {last_message.content}")
+        last_ai = next(
+            (m for m in reversed(result.get("messages", [])) if isinstance(m, AIMessage)),
+            None,
+        )
+        if last_ai and last_ai.content:
+             print(f"Sunday: {last_ai.content}")
 
     if telegram_stop_event:
         telegram_stop_event.set()
