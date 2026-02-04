@@ -16,17 +16,28 @@ from langchain_core.messages import HumanMessage
 import uvicorn
 from contextlib import asynccontextmanager
 
-# Global variable for the graph
+# Global variables
 graph = None
+telegram_thread = None
+telegram_stop_event = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Load the graph on startup
-    global graph
+    global graph, telegram_thread, telegram_stop_event
     print("Initialize Graph...")
     graph = create_graph()
+    try:
+        from integrations.telegram.run_bot import start_polling
+        telegram_thread, telegram_stop_event = start_polling(graph=graph)
+    except Exception as e:
+        print(f"Telegram bot not started: {e}")
     yield
     # Clean up if necessary
+    if telegram_stop_event:
+        telegram_stop_event.set()
+        if telegram_thread:
+            telegram_thread.join(timeout=5)
     print("Shutting down...")
 
 app = FastAPI(lifespan=lifespan, title="Sunday Chat API")
