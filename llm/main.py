@@ -8,11 +8,13 @@ if str(root_dir) not in sys.path:
 
 from llm.graph.graph import create_graph
 from integrations.telegram.run_bot import start_polling
+from llm.graph.tools.reminders.scheduler import start_scheduler
 from langchain_core.messages import HumanMessage, AIMessage
 
 def main():
     graph = create_graph()
     telegram_thread, telegram_stop_event = start_polling(graph=graph)
+    scheduler_thread, scheduler_stop_event = start_scheduler(graph=graph)
     print(graph)
     print("Sunday Agent Initialized. Type 'quit' to exit.")
     chat_history = []
@@ -42,6 +44,10 @@ def main():
         telegram_stop_event.set()
         if telegram_thread:
             telegram_thread.join(timeout=5)
+    if scheduler_stop_event:
+        scheduler_stop_event.set()
+        if scheduler_thread:
+            scheduler_thread.join(timeout=5)
 
 if __name__ == "__main__":
     main()

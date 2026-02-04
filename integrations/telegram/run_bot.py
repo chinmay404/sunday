@@ -8,6 +8,7 @@ import sqlite3
 from pathlib import Path
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, AIMessage
+from llm.graph.tools.reminders.weakup_tools import set_current_chat_id, reset_current_chat_id
 from langgraph.checkpoint.sqlite import SqliteSaver
 from typing import Optional, Tuple
 
@@ -51,8 +52,10 @@ def process_message(token, graph, message_data):
 
     print(f"Received message from {username} ({chat_id}): {text}")
 
+    token_ctx = None
     # Invoke the graph
     try:
+        token_ctx = set_current_chat_id(str(chat_id))
         inputs = {
             "messages": [HumanMessage(content=text)],
             "platform": "telegram",
@@ -80,9 +83,20 @@ def process_message(token, graph, message_data):
         print(error_msg)
         # Optional: send error message to user
         # send_message(token, chat_id, "Sorry, I encountered an error processing your request.", None, False)
+    finally:
+        if token_ctx is not None:
+            try:
+                reset_current_chat_id(token_ctx)
+            except Exception:
+                pass
 
 def _should_enable_bot() -> bool:
     flag = os.getenv("TELEGRAM_BOT_ENABLE", "true").strip().lower()
+    return flag not in {"0", "false", "no", "off"}
+
+
+def _force_sqlite() -> bool:
+    flag = os.getenv("TELEGRAM_FORCE_SQLITE", "true").strip().lower()
     return flag not in {"0", "false", "no", "off"}
 
 
@@ -97,7 +111,7 @@ def run_polling(graph=None, token: Optional[str] = None, stop_event: Optional[th
         print("Error: TELEGRAM_API_TOKEN not found.")
         return
 
-    if graph is None:
+    if graph is None or _force_sqlite():
         print("Initializing Graph with SqliteSaver...")
         # Use SqliteSaver to avoid Postgres requirement
         db_path = repo_root / "sunday_checkpoints.sqlite"

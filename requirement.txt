@@ -38,3 +38,4 @@ fastapi
 uvicorn
 requests
 vobject
+dateparser

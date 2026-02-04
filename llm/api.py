@@ -20,11 +20,13 @@ from contextlib import asynccontextmanager
 graph = None
 telegram_thread = None
 telegram_stop_event = None
+scheduler_thread = None
+scheduler_stop_event = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Load the graph on startup
-    global graph, telegram_thread, telegram_stop_event
+    global graph, telegram_thread, telegram_stop_event, scheduler_thread, scheduler_stop_event
     print("Initialize Graph...")
     graph = create_graph()
     try:
@@ -32,12 +34,21 @@ async def lifespan(app: FastAPI):
         telegram_thread, telegram_stop_event = start_polling(graph=graph)
     except Exception as e:
         print(f"Telegram bot not started: {e}")
+    try:
+        from llm.graph.tools.reminders.scheduler import start_scheduler
+        scheduler_thread, scheduler_stop_event = start_scheduler(graph=graph)
+    except Exception as e:
+        print(f"Reminder scheduler not started: {e}")
     yield
     # Clean up if necessary
     if telegram_stop_event:
         telegram_stop_event.set()
         if telegram_thread:
             telegram_thread.join(timeout=5)
+    if scheduler_stop_event:
+        scheduler_stop_event.set()
+        if scheduler_thread:
+            scheduler_thread.join(timeout=5)
     print("Shutting down...")
 
 app = FastAPI(lifespan=lifespan, title="Sunday Chat API")

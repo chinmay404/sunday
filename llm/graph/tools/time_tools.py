@@ -25,8 +25,8 @@ def add_todo_item(task: str, due: str = "today"):
 @tool
 def weak_at_certain_time(time_iso: str, message: str, note: str = ""):
     """
-    Create a reminder at a specific ISO time.
-    Dates must be ISO format (e.g., '2026-01-05T10:00:00').
+    Create a reminder at a specific time.
+    Accepts ISO or natural language (e.g., 'tomorrow 7pm').
     """
     return _create_reminder(time_iso, message, note)
 
