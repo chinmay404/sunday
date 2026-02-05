@@ -29,6 +29,30 @@ class TimeManager:
         self._authenticate_google()
         self._authenticate_todoist()
 
+    def _run_google_oauth_flow(self, flow: InstalledAppFlow):
+        """Run OAuth flow with optional headless/console mode."""
+        flow_mode = os.getenv("GOOGLE_OAUTH_FLOW", "local").strip().lower()
+        headless = os.getenv("GOOGLE_OAUTH_HEADLESS", "").strip().lower() in {"1", "true", "yes", "on"}
+
+        use_console = headless or flow_mode in {"console", "headless"}
+        if use_console:
+            redirect_uri = os.getenv("GOOGLE_OAUTH_REDIRECT_URI", "").strip()
+            if not redirect_uri:
+                # Default to OOB for manual code copy. Can be overridden via env var.
+                redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
+            flow.redirect_uri = redirect_uri
+            if hasattr(flow, "run_console"):
+                return flow.run_console()
+            auth_url, _ = flow.authorization_url(prompt="consent")
+            print("Open this URL to authorize Google Calendar access:")
+            print(auth_url)
+            code = input("Enter the authorization code: ").strip()
+            flow.fetch_token(code=code)
+            return flow.credentials
+
+        # Default: local server flow (opens browser)
+        return flow.run_local_server(port=0)
+
     def _authenticate_google(self):
         """Authenticates with Google Calendar API."""
         try:
@@ -41,7 +65,8 @@ class TimeManager:
                 else:
                     if os.path.exists(self.credentials_path):
                         flow = InstalledAppFlow.from_client_secrets_file(self.credentials_path, SCOPES)
-                        self.creds = flow.run_local_server(port=0)
+                        self.creds = self._run_google_oauth_flow(flow)
+                        os.makedirs(os.path.dirname(self.token_path), exist_ok=True)
                         with open(self.token_path, 'w') as token:
                             token.write(self.creds.to_json())
                     else:
