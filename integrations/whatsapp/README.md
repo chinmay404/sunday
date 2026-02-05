@@ -44,6 +44,10 @@ Make sure you have Node.js installed.
    - Set `WHATSAPP_BOT_AUTOSTART=true` (default) to let `python llm/api.py` start the WhatsApp bot automatically.
    - Override command with `WHATSAPP_BOT_CMD="node index.js"`.
    - The QR is sent to Telegram as an image when login is required.
+7. One-time login helper:
+   - Run `node integrations/whatsapp/login.js` (or `npm run wa:login` inside `integrations/whatsapp/`).
+   - It prints a QR, waits for login, then exits.
+   - After that, `python llm/api.py` will start the WhatsApp bot without re-scanning.
 
 ## Features & Controls
 

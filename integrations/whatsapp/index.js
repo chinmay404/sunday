@@ -122,11 +122,12 @@ async function notifyTelegramPhoto(dataUrl, caption) {
 const CHROME_PATH = process.env.CHROME_PATH || process.env.PUPPETEER_EXECUTABLE_PATH;
 
 // Initialize the WhatsApp client
+const AUTH_PATH = path.join(__dirname, '.wwebjs_auth');
 const client = new Client({
-    authStrategy: new LocalAuth(), // This saves the session so you don't have to scan every time
+    authStrategy: new LocalAuth({ dataPath: AUTH_PATH }), // Consistent session path
     puppeteer: {
         headless: true,
-        executablePath: CHROME_PATH,
+        executablePath: CHROME_PATH || "/usr/bin/chromium",
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
