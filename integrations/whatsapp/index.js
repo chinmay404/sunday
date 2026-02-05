@@ -106,11 +106,20 @@ async function notifyTelegram(message) {
     }
 }
 
+const CHROME_PATH = process.env.CHROME_PATH || process.env.PUPPETEER_EXECUTABLE_PATH;
+
 // Initialize the WhatsApp client
 const client = new Client({
     authStrategy: new LocalAuth(), // This saves the session so you don't have to scan every time
     puppeteer: {
-        args: ['--no-sandbox'],
+        headless: true,
+        executablePath: CHROME_PATH,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu'
+        ],
     }
 });
 

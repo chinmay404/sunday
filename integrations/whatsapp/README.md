@@ -37,6 +37,9 @@ Make sure you have Node.js installed.
 4. Status endpoint:
    - `GET http://localhost:3000/status` shows readiness and the latest QR (ASCII) if login is required.
    - When the Python API server starts, it checks `/status` and sends a Telegram notification if login is needed.
+5. Headless / Raspberry Pi:
+   - Install Chromium and set `CHROME_PATH=/usr/bin/chromium` (or your chromium path).
+   - The bot runs headless with `--no-sandbox` by default.
 
 ## Features & Controls
 
