@@ -242,17 +242,16 @@ def send_whatsapp_message(target: str, message: str):
     elif not target.replace('+', '').isdigit():
         contacts = load_contacts()
         clean_name = target.lower().strip()
-         
-         # Exact match
-         if clean_name in contacts:
-             final_number = contacts[clean_name]['number']
-         else:
-             # Fuzzy match
-             matches = get_close_matches(clean_name, contacts.keys(), n=1, cutoff=0.7)
-             if matches:
-                 final_number = contacts[matches[0]]['number']
-             else:
-                 return f"Could not find contact named '{target}'. Please provide a valid phone number."
+        # Exact match
+        if clean_name in contacts:
+            final_number = contacts[clean_name]['number']
+        else:
+            # Fuzzy match
+            matches = get_close_matches(clean_name, contacts.keys(), n=1, cutoff=0.7)
+            if matches:
+                final_number = contacts[matches[0]]['number']
+            else:
+                return f"Could not find contact named '{target}'. Please provide a valid phone number."
 
     # 2. Add suffix if needed
     if "@" not in final_number:
