@@ -1,12 +1,16 @@
 import sys
 from pathlib import Path
 import os
+from dotenv import load_dotenv
+import requests
 
 # Add root directory to sys.path to ensure imports work correctly
 current_dir = Path(__file__).resolve().parent
 root_dir = current_dir.parent
 if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
+
+load_dotenv(root_dir / ".env")
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,6 +20,65 @@ from langchain_core.messages import HumanMessage, AIMessage
 import uvicorn
 from contextlib import asynccontextmanager
 from llm.graph.habits.scheduler import start_habit_scheduler
+from integrations.telegram.send_telegram import send_message as send_telegram_api
+
+WHATSAPP_STATUS_URL = os.getenv("WHATSAPP_STATUS_URL", "http://localhost:3000/status")
+
+
+def _notify_whatsapp_status():
+    token = os.getenv("TELEGRAM_API_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        print("Skipping WhatsApp status notify: TELEGRAM_API_TOKEN or TELEGRAM_CHAT_ID missing.")
+        return
+    try:
+        response = requests.get(WHATSAPP_STATUS_URL, timeout=3)
+        if response.status_code != 200:
+            print(f"WhatsApp status check failed: {response.status_code}")
+            send_telegram_api(
+                token=token,
+                chat_id=chat_id,
+                message="WhatsApp status check failed. Is the WhatsApp server running?",
+                parse_mode=None,
+                disable_preview=True,
+            )
+            return
+        data = response.json()
+    except Exception as exc:
+        print(f"WhatsApp status check error: {exc}")
+        try:
+            send_telegram_api(
+                token=token,
+                chat_id=chat_id,
+                message="WhatsApp status check failed. Start the WhatsApp server to generate a QR code.",
+                parse_mode=None,
+                disable_preview=True,
+            )
+        except Exception:
+            pass
+        return
+
+    if data.get("ready"):
+        print("WhatsApp status: ready.")
+        return
+
+    qr = data.get("qr")
+    message = "WhatsApp not logged in. Scan the QR to link the device."
+    if qr:
+        message = f"{message}\n\n{qr}"
+    else:
+        message = f"{message}\n\nStart the WhatsApp server to generate a QR code."
+
+    try:
+        send_telegram_api(
+            token=token,
+            chat_id=chat_id,
+            message=message,
+            parse_mode=None,
+            disable_preview=True,
+        )
+    except Exception as exc:
+        print(f"Failed to send WhatsApp status to Telegram: {exc}")
 
 # Global variables
 graph = None
@@ -46,6 +109,10 @@ async def lifespan(app: FastAPI):
         habit_thread, habit_stop_event = start_habit_scheduler()
     except Exception as e:
         print(f"Habit analyzer not started: {e}")
+    try:
+        _notify_whatsapp_status()
+    except Exception as e:
+        print(f"WhatsApp status notify failed: {e}")
     yield
     # Clean up if necessary
     if telegram_stop_event:
@@ -82,6 +149,10 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     response: str
 
+class TelegramNotifyRequest(BaseModel):
+    message: str
+    chat_id: str | None = None
+
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest):
     """
@@ -117,6 +188,26 @@ def chat(request: ChatRequest):
         return ChatResponse(response=content)
     except Exception as e:
         print(f"Error processing message: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/telegram/notify")
+def telegram_notify(request: TelegramNotifyRequest):
+    token = os.getenv("TELEGRAM_API_TOKEN")
+    if not token:
+        raise HTTPException(status_code=500, detail="Missing TELEGRAM_API_TOKEN")
+    target_chat_id = request.chat_id or os.getenv("TELEGRAM_CHAT_ID")
+    if not target_chat_id:
+        raise HTTPException(status_code=400, detail="Missing chat_id and TELEGRAM_CHAT_ID")
+    try:
+        send_telegram_api(
+            token=token,
+            chat_id=target_chat_id,
+            message=request.message,
+            parse_mode=None,
+            disable_preview=True,
+        )
+        return {"ok": True}
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

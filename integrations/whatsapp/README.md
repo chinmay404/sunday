@@ -34,6 +34,9 @@ Make sure you have Node.js installed.
    ```
 3. **First Time Only**: Scan the QR code that appears in the terminal with your WhatsApp (Linked Devices).
    *The session will be saved in `.wwebjs_auth/` so you don't need to scan again.*
+4. Status endpoint:
+   - `GET http://localhost:3000/status` shows readiness and the latest QR (ASCII) if login is required.
+   - When the Python API server starts, it checks `/status` and sends a Telegram notification if login is needed.
 
 ## Features & Controls
 

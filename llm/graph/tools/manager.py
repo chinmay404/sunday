@@ -1,13 +1,54 @@
 from .search import get_search
 from .time_tools import get_time_tools
 from .reminders.weakup_tools import create_reminder, list_reminders, cancel_reminder
-from .whatsapp import add_to_whitelist, get_whitelist, send_whatsapp_message, lookup_contact
+from .whatsapp import (
+    add_to_whitelist,
+    get_whitelist,
+    send_whatsapp_message,
+    lookup_contact,
+    whatsapp_get_settings,
+    whatsapp_set_busy_mode,
+    whatsapp_list_pending,
+    whatsapp_approve_pending,
+    whatsapp_reply_pending,
+    whatsapp_reject_pending,
+)
 from .telegram_tool import send_telegram_message
+from .notion_tool import (
+    notion_create_note,
+    notion_append_content,
+    notion_update_page_properties,
+    notion_get_page,
+    notion_get_page_content,
+    notion_query_database,
+    notion_search,
+)
 
 def get_all_tools():
     tools = [get_search]
     tools.extend(get_time_tools())
     tools.extend([create_reminder, list_reminders, cancel_reminder])
     tools.extend([add_to_whitelist, get_whitelist, send_whatsapp_message, lookup_contact])
+    tools.extend(
+        [
+            whatsapp_get_settings,
+            whatsapp_set_busy_mode,
+            whatsapp_list_pending,
+            whatsapp_approve_pending,
+            whatsapp_reply_pending,
+            whatsapp_reject_pending,
+        ]
+    )
     tools.append(send_telegram_message)
+    tools.extend(
+        [
+            notion_create_note,
+            notion_append_content,
+            notion_update_page_properties,
+            notion_get_page,
+            notion_get_page_content,
+            notion_query_database,
+            notion_search,
+        ]
+    )
     return tools
