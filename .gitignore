@@ -31,7 +31,7 @@ node_modules
 # Editor directories
 .vscode/
 .idea/
-
+*.db
 # OS specific
 .DS_Store
 Thumbs.db
