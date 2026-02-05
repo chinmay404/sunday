@@ -60,6 +60,8 @@ def process_message(token, graph, message_data):
             "messages": [HumanMessage(content=text)],
             "platform": "telegram",
             "system_prompt": f"User is {username}. Respond concisely.", # Optional contextual info
+            "thread_id": str(chat_id),
+            "user_name": username,
         }
         
         # We use a thread_id based on chat_id to maintain conversation history per user

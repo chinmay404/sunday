@@ -39,3 +39,4 @@ Thumbs.db
 # Project specific
 llm/graph/tools/google/google_auth.json
 llm/graph/tools/google/token.json
+llm/graph/habits/habits.db

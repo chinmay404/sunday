@@ -9,12 +9,14 @@ if str(root_dir) not in sys.path:
 from llm.graph.graph import create_graph
 from integrations.telegram.run_bot import start_polling
 from llm.graph.tools.reminders.scheduler import start_scheduler
+from llm.graph.habits.scheduler import start_habit_scheduler
 from langchain_core.messages import HumanMessage, AIMessage
 
 def main():
     graph = create_graph()
     telegram_thread, telegram_stop_event = start_polling(graph=graph)
     scheduler_thread, scheduler_stop_event = start_scheduler(graph=graph)
+    habit_thread, habit_stop_event = start_habit_scheduler()
     print(graph)
     print("Sunday Agent Initialized. Type 'quit' to exit.")
     chat_history = []
@@ -26,7 +28,12 @@ def main():
             
         # Persisted history is managed by the graph checkpointer (Postgres).
         # We only send the latest user turn; LangGraph will retrieve prior turns.
-        initial_state = {"messages": [HumanMessage(content=user_input)]}
+        initial_state = {
+            "messages": [HumanMessage(content=user_input)],
+            "thread_id": "default",
+            "user_name": "cli",
+            "platform": "cli",
+        }
         
         print("Sunday is thinking...")
         config = {"configurable": {"thread_id": "default"}}
@@ -48,6 +55,10 @@ def main():
         scheduler_stop_event.set()
         if scheduler_thread:
             scheduler_thread.join(timeout=5)
+    if habit_stop_event:
+        habit_stop_event.set()
+        if habit_thread:
+            habit_thread.join(timeout=5)
 
 if __name__ == "__main__":
     main()

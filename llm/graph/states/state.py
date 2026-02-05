@@ -32,5 +32,7 @@ class ChatState(TypedDict):
     memory_context: NotRequired[Optional[str]]
     system_prompt: NotRequired[str]
     platform: NotRequired[str]
-
+    thread_id: NotRequired[str]
+    user_name: NotRequired[str]
+    skip_action_log: NotRequired[bool]
 

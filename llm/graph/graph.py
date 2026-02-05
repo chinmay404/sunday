@@ -4,6 +4,7 @@ from llm.graph.states.state import ChatState
 from llm.graph.nodes.agent import agent_node
 from llm.graph.nodes.context import context_gathering_node
 from llm.graph.nodes.memory_processor import memory_processing_node
+from llm.graph.nodes.action_analyzer import action_analyzer_node
 from llm.graph.tools.manager import get_all_tools
 from llm.graph.postgres_saver import PostgresSaver
 
@@ -12,6 +13,7 @@ def create_graph(checkpointer=None):
     
     # Add nodes
     workflow.add_node("context_gathering", context_gathering_node)
+    workflow.add_node("action_analyzer", action_analyzer_node)
     workflow.add_node("agent", agent_node)
     workflow.add_node("memory_processor", memory_processing_node)
     
@@ -23,8 +25,9 @@ def create_graph(checkpointer=None):
     # Start with context gathering to populate memory_context
     workflow.set_entry_point("context_gathering")
     
-    # Then go to agent
-    workflow.add_edge("context_gathering", "agent")
+    # Then analyze actions and go to agent
+    workflow.add_edge("context_gathering", "action_analyzer")
+    workflow.add_edge("action_analyzer", "agent")
     
     workflow.add_conditional_edges(
         "agent",

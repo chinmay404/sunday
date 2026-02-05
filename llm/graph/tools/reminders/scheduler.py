@@ -77,9 +77,14 @@ def run_scheduler(
 
             for reminder_id, _time_iso, message, note, chat_id in due:
                 reminder_text = _build_reminder_message(message, note)
-                initial_state = {"messages": [HumanMessage(content=reminder_text)]}
                 target_chat_id = str(chat_id) if chat_id else (str(default_chat_id) if default_chat_id else None)
                 thread_id = target_chat_id or f"reminder-{reminder_id}"
+                initial_state = {
+                    "messages": [HumanMessage(content=reminder_text)],
+                    "skip_action_log": True,
+                    "platform": "reminder",
+                    "thread_id": thread_id,
+                }
                 try:
                     graph.invoke(
                         initial_state,

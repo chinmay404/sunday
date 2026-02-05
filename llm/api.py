@@ -15,6 +15,7 @@ from llm.graph.graph import create_graph
 from langchain_core.messages import HumanMessage, AIMessage
 import uvicorn
 from contextlib import asynccontextmanager
+from llm.graph.habits.scheduler import start_habit_scheduler
 
 # Global variables
 graph = None
@@ -22,11 +23,13 @@ telegram_thread = None
 telegram_stop_event = None
 scheduler_thread = None
 scheduler_stop_event = None
+habit_thread = None
+habit_stop_event = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Load the graph on startup
-    global graph, telegram_thread, telegram_stop_event, scheduler_thread, scheduler_stop_event
+    global graph, telegram_thread, telegram_stop_event, scheduler_thread, scheduler_stop_event, habit_thread, habit_stop_event
     print("Initialize Graph...")
     graph = create_graph()
     try:
@@ -39,6 +42,10 @@ async def lifespan(app: FastAPI):
         scheduler_thread, scheduler_stop_event = start_scheduler(graph=graph)
     except Exception as e:
         print(f"Reminder scheduler not started: {e}")
+    try:
+        habit_thread, habit_stop_event = start_habit_scheduler()
+    except Exception as e:
+        print(f"Habit analyzer not started: {e}")
     yield
     # Clean up if necessary
     if telegram_stop_event:
@@ -49,6 +56,10 @@ async def lifespan(app: FastAPI):
         scheduler_stop_event.set()
         if scheduler_thread:
             scheduler_thread.join(timeout=5)
+    if habit_stop_event:
+        habit_stop_event.set()
+        if habit_thread:
+            habit_thread.join(timeout=5)
     print("Shutting down...")
 
 app = FastAPI(lifespan=lifespan, title="Sunday Chat API")
@@ -87,6 +98,8 @@ def chat(request: ChatRequest):
         initial_state["system_prompt"] = request.system_prompt
     if request.platform:
         initial_state["platform"] = request.platform
+    initial_state["thread_id"] = request.thread_id
+    initial_state["user_name"] = request.username
 
     config = {"configurable": {"thread_id": request.thread_id}}
     
