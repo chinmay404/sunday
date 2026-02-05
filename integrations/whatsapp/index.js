@@ -1,5 +1,6 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
+const qrcodeImage = require('qrcode');
 const axios = require('axios');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -14,6 +15,7 @@ const SETTINGS_FILE = path.join(__dirname, 'settings.json');
 const PENDING_FILE = path.join(__dirname, 'pending.json');
 const LLM_API_URL = 'http://localhost:8000/chat';
 const TELEGRAM_NOTIFY_URL = 'http://localhost:8000/telegram/notify';
+const TELEGRAM_NOTIFY_PHOTO_URL = 'http://localhost:8000/telegram/notify-photo';
 const API_PORT = 3000;
 
 const DEFAULT_SETTINGS = {
@@ -106,6 +108,17 @@ async function notifyTelegram(message) {
     }
 }
 
+async function notifyTelegramPhoto(dataUrl, caption) {
+    try {
+        await axios.post(TELEGRAM_NOTIFY_PHOTO_URL, {
+            image_base64: dataUrl,
+            caption: caption || "WhatsApp QR code - scan to log in."
+        });
+    } catch (err) {
+        console.error("Failed to notify Telegram photo:", err.message);
+    }
+}
+
 const CHROME_PATH = process.env.CHROME_PATH || process.env.PUPPETEER_EXECUTABLE_PATH;
 
 // Initialize the WhatsApp client
@@ -132,6 +145,10 @@ client.on('qr', (qr) => {
         console.log('Scan this QR code with your WhatsApp app to log in:');
         console.log(qrText);
     });
+
+    qrcodeImage.toDataURL(qr)
+        .then((dataUrl) => notifyTelegramPhoto(dataUrl))
+        .catch((err) => console.error("Failed to generate QR image:", err.message));
 });
 
 // Event: The client is ready to send/receive messages

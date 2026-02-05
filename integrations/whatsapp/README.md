@@ -40,6 +40,10 @@ Make sure you have Node.js installed.
 5. Headless / Raspberry Pi:
    - Install Chromium and set `CHROME_PATH=/usr/bin/chromium` (or your chromium path).
    - The bot runs headless with `--no-sandbox` by default.
+6. Autostart from API:
+   - Set `WHATSAPP_BOT_AUTOSTART=true` (default) to let `python llm/api.py` start the WhatsApp bot automatically.
+   - Override command with `WHATSAPP_BOT_CMD="node index.js"`.
+   - The QR is sent to Telegram as an image when login is required.
 
 ## Features & Controls
 

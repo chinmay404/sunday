@@ -3,6 +3,9 @@ from pathlib import Path
 import os
 from dotenv import load_dotenv
 import requests
+import base64
+import subprocess
+import shlex
 
 # Add root directory to sys.path to ensure imports work correctly
 current_dir = Path(__file__).resolve().parent
@@ -23,6 +26,47 @@ from llm.graph.habits.scheduler import start_habit_scheduler
 from integrations.telegram.send_telegram import send_message as send_telegram_api
 
 WHATSAPP_STATUS_URL = os.getenv("WHATSAPP_STATUS_URL", "http://localhost:3000/status")
+WHATSAPP_BOT_AUTOSTART = os.getenv("WHATSAPP_BOT_AUTOSTART", "true").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+WHATSAPP_BOT_CMD = os.getenv("WHATSAPP_BOT_CMD", "node index.js")
+
+
+def _whatsapp_status():
+    try:
+        response = requests.get(WHATSAPP_STATUS_URL, timeout=2)
+        if response.status_code != 200:
+            return None
+        return response.json()
+    except Exception:
+        return None
+
+
+def _start_whatsapp_bot():
+    global whatsapp_process
+    if not WHATSAPP_BOT_AUTOSTART:
+        print("WhatsApp bot autostart disabled.")
+        return
+
+    existing = _whatsapp_status()
+    if existing is not None:
+        print("WhatsApp server already running.")
+        return
+
+    bot_dir = root_dir / "integrations" / "whatsapp"
+    try:
+        cmd = shlex.split(WHATSAPP_BOT_CMD)
+        whatsapp_process = subprocess.Popen(
+            cmd,
+            cwd=str(bot_dir),
+            env=os.environ.copy(),
+        )
+        print(f"Started WhatsApp bot with PID {whatsapp_process.pid}")
+    except Exception as exc:
+        print(f"Failed to start WhatsApp bot: {exc}")
 
 
 def _notify_whatsapp_status():
@@ -88,11 +132,12 @@ scheduler_thread = None
 scheduler_stop_event = None
 habit_thread = None
 habit_stop_event = None
+whatsapp_process = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Load the graph on startup
-    global graph, telegram_thread, telegram_stop_event, scheduler_thread, scheduler_stop_event, habit_thread, habit_stop_event
+    global graph, telegram_thread, telegram_stop_event, scheduler_thread, scheduler_stop_event, habit_thread, habit_stop_event, whatsapp_process
     print("Initialize Graph...")
     graph = create_graph()
     try:
@@ -109,6 +154,10 @@ async def lifespan(app: FastAPI):
         habit_thread, habit_stop_event = start_habit_scheduler()
     except Exception as e:
         print(f"Habit analyzer not started: {e}")
+    try:
+        _start_whatsapp_bot()
+    except Exception as e:
+        print(f"WhatsApp bot autostart failed: {e}")
     try:
         _notify_whatsapp_status()
     except Exception as e:
@@ -127,6 +176,11 @@ async def lifespan(app: FastAPI):
         habit_stop_event.set()
         if habit_thread:
             habit_thread.join(timeout=5)
+    if whatsapp_process:
+        try:
+            whatsapp_process.terminate()
+        except Exception:
+            pass
     print("Shutting down...")
 
 app = FastAPI(lifespan=lifespan, title="Sunday Chat API")
@@ -151,6 +205,11 @@ class ChatResponse(BaseModel):
 
 class TelegramNotifyRequest(BaseModel):
     message: str
+    chat_id: str | None = None
+
+class TelegramNotifyPhotoRequest(BaseModel):
+    image_base64: str
+    caption: str | None = None
     chat_id: str | None = None
 
 @app.post("/chat", response_model=ChatResponse)
@@ -207,6 +266,36 @@ def telegram_notify(request: TelegramNotifyRequest):
             disable_preview=True,
         )
         return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/telegram/notify-photo")
+def telegram_notify_photo(request: TelegramNotifyPhotoRequest):
+    token = os.getenv("TELEGRAM_API_TOKEN")
+    if not token:
+        raise HTTPException(status_code=500, detail="Missing TELEGRAM_API_TOKEN")
+    target_chat_id = request.chat_id or os.getenv("TELEGRAM_CHAT_ID")
+    if not target_chat_id:
+        raise HTTPException(status_code=400, detail="Missing chat_id and TELEGRAM_CHAT_ID")
+    data = request.image_base64.strip()
+    if data.startswith("data:"):
+        data = data.split(",", 1)[-1]
+    try:
+        image_bytes = base64.b64decode(data)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 image")
+    try:
+        url = f"https://api.telegram.org/bot{token}/sendPhoto"
+        files = {"photo": ("qr.png", image_bytes)}
+        payload = {"chat_id": target_chat_id}
+        if request.caption:
+            payload["caption"] = request.caption
+        resp = requests.post(url, data=payload, files=files, timeout=10)
+        if resp.status_code != 200:
+            raise HTTPException(status_code=500, detail=resp.text)
+        return {"ok": True}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
