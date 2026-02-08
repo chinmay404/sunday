@@ -25,6 +25,8 @@ from .location_tools import (
     location_list_places,
     location_forget_place,
     location_pattern_report,
+    location_recent_events,
+    location_debug_summary,
 )
 from .notion_tool import (
     notion_create_note,
@@ -61,6 +63,8 @@ def get_all_tools():
             location_list_places,
             location_forget_place,
             location_pattern_report,
+            location_recent_events,
+            location_debug_summary,
         ]
     )
     tools.append(send_telegram_message)

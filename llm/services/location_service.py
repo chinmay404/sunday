@@ -13,6 +13,8 @@ MAX_HISTORY_DAYS = 14
 MIN_HISTORY_SAMPLE_SECONDS = 60
 PATTERN_DWELL_RADIUS_M = 250.0
 PATTERN_DWELL_MINUTES = 90
+MAX_EVENT_DAYS = 21
+MAX_EVENTS = 5000
 
 CURRENT_LOCATION_USER_ID = contextvars.ContextVar("current_location_user_id", default=None)
 
@@ -55,6 +57,7 @@ class LocationService:
             "places": {},
             "aliases": {},
             "meta": {"last_pattern_prompt": {}},
+            "events": [],
         }
 
     def _normalize_data(self, loaded: Dict) -> Dict:
@@ -96,6 +99,8 @@ class LocationService:
             normalized["meta"].get("last_pattern_prompt"), dict
         ):
             normalized["meta"]["last_pattern_prompt"] = {}
+        events = loaded.get("events")
+        normalized["events"] = events if isinstance(events, list) else []
         return normalized
 
     def _load_locations(self) -> None:
@@ -134,6 +139,25 @@ class LocationService:
             for p in history
             if isinstance(p, dict) and float(p.get("timestamp", 0)) >= cutoff
         ]
+
+    def _append_event_unlocked(self, event_type: str, user_id: Optional[str], details: Optional[Dict] = None) -> None:
+        events = self.data.setdefault("events", [])
+        if not isinstance(events, list):
+            events = []
+            self.data["events"] = events
+        now_ts = time.time()
+        event = {
+            "timestamp": now_ts,
+            "event_type": str(event_type),
+            "user_id": str(user_id) if user_id is not None else None,
+            "details": details or {},
+        }
+        events.append(event)
+
+        cutoff = now_ts - (MAX_EVENT_DAYS * 86400)
+        self.data["events"] = [
+            e for e in events if isinstance(e, dict) and float(e.get("timestamp", 0)) >= cutoff
+        ][-MAX_EVENTS:]
 
     def update_location(
         self,
@@ -185,6 +209,16 @@ class LocationService:
                     }
                 )
                 self._prune_history_unlocked(uid)
+                self._append_event_unlocked(
+                    event_type="location_update",
+                    user_id=uid,
+                    details={
+                        "chat_id": cid,
+                        "latitude": round(float(latitude), 6),
+                        "longitude": round(float(longitude), 6),
+                        "source": source,
+                    },
+                )
 
         self._save_locations()
 
@@ -328,6 +362,16 @@ class LocationService:
         }
         with self._lock:
             self.data.setdefault("places", {}).setdefault(resolved_user, {})[label_key] = payload
+            self._append_event_unlocked(
+                event_type="place_added",
+                user_id=resolved_user,
+                details={
+                    "label": place_label,
+                    "latitude": round(float(payload["latitude"]), 6),
+                    "longitude": round(float(payload["longitude"]), 6),
+                    "radius_m": float(payload["radius_m"]),
+                },
+            )
         self._save_locations()
         return payload
 
@@ -346,6 +390,11 @@ class LocationService:
             if label_key in places:
                 del places[label_key]
                 removed = True
+                self._append_event_unlocked(
+                    event_type="place_removed",
+                    user_id=resolved_user,
+                    details={"label": label},
+                )
         if removed:
             self._save_locations()
         return removed
@@ -447,6 +496,11 @@ class LocationService:
         with self._lock:
             meta = self.data.setdefault("meta", {}).setdefault("last_pattern_prompt", {})
             meta[uid] = {"timestamp": now_ts, "reason_key": str(reason_key)}
+            self._append_event_unlocked(
+                event_type="pattern_prompt_sent",
+                user_id=uid,
+                details={"reason_key": str(reason_key)},
+            )
         self._save_locations()
 
     def get_location_string(self, user_id: str, max_age_hours: Optional[float] = None) -> str:
@@ -485,3 +539,82 @@ class LocationService:
         if pattern.get("available"):
             parts.append(f"Pattern snapshot: {pattern.get('summary')}")
         return " ".join(parts)
+
+    def get_recent_events(
+        self,
+        user_id: Optional[str] = None,
+        limit: int = 50,
+        event_type: Optional[str] = None,
+    ) -> List[Dict]:
+        self._load_locations()
+        max_items = max(1, min(int(limit), 200))
+        resolved_user = None
+        if user_id is not None:
+            resolved_user = self._resolve_user_id(str(user_id))
+        with self._lock:
+            events = self.data.get("events", [])
+            if not isinstance(events, list):
+                return []
+            filtered = []
+            for e in events:
+                if not isinstance(e, dict):
+                    continue
+                if resolved_user and str(e.get("user_id") or "") != resolved_user:
+                    continue
+                if event_type and str(e.get("event_type") or "") != str(event_type):
+                    continue
+                filtered.append(e)
+            return filtered[-max_items:]
+
+    def get_debug_summary(self, user_id: Optional[str] = None) -> Dict:
+        self._load_locations()
+        resolved_user = None
+        if user_id:
+            resolved_user = self._resolve_user_id(str(user_id))
+
+        with self._lock:
+            if resolved_user:
+                latest = self.data.get("latest", {}).get(resolved_user)
+                history = self.data.get("history", {}).get(resolved_user, [])
+                places = self.data.get("places", {}).get(resolved_user, {})
+                event_count = len(
+                    [
+                        e
+                        for e in self.data.get("events", [])
+                        if isinstance(e, dict) and str(e.get("user_id") or "") == resolved_user
+                    ]
+                )
+                return {
+                    "user_id": resolved_user,
+                    "has_latest": latest is not None,
+                    "latest": latest,
+                    "history_points": len(history) if isinstance(history, list) else 0,
+                    "saved_places": sorted(list(places.keys())) if isinstance(places, dict) else [],
+                    "event_count": event_count,
+                }
+
+            latest = self.data.get("latest", {})
+            tracked_users = []
+            if isinstance(latest, dict):
+                seen = set()
+                for key, payload in latest.items():
+                    if isinstance(payload, dict):
+                        uid = str(payload.get("user_id", key))
+                    else:
+                        uid = str(key)
+                    if uid.startswith("-") or uid in seen:
+                        continue
+                    seen.add(uid)
+                    tracked_users.append(uid)
+                tracked_users = sorted(tracked_users)
+            places_by_user = {}
+            for uid, places in self.data.get("places", {}).items():
+                if isinstance(places, dict):
+                    places_by_user[str(uid)] = sorted(list(places.keys()))
+            return {
+                "tracked_users": tracked_users,
+                "total_events": len(self.data.get("events", []))
+                if isinstance(self.data.get("events", []), list)
+                else 0,
+                "places_by_user": places_by_user,
+            }

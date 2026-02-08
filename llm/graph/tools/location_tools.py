@@ -97,3 +97,28 @@ def location_pattern_report(user_id: Optional[str] = None):
         f"Unusual: {report.get('unusual')}. "
         f"Summary: {report.get('summary')}"
     )
+
+
+@tool
+def location_recent_events(user_id: Optional[str] = None, limit: int = 20):
+    """Show recent location events (updates, place added/removed, observer prompts)."""
+    resolved = _resolve_user(user_id)
+    events = location_service.get_recent_events(user_id=resolved, limit=limit)
+    if not events:
+        return "No recent location events."
+    lines = ["Recent location events:"]
+    for event in events:
+        ts = event.get("timestamp")
+        event_type = event.get("event_type")
+        uid = event.get("user_id")
+        details = event.get("details") or {}
+        lines.append(f"- ts={ts} type={event_type} user={uid} details={details}")
+    return "\n".join(lines)
+
+
+@tool
+def location_debug_summary(user_id: Optional[str] = None):
+    """Show location system summary: tracked users, latest point, places, and event counts."""
+    resolved = _resolve_user(user_id)
+    summary = location_service.get_debug_summary(user_id=resolved)
+    return str(summary)
