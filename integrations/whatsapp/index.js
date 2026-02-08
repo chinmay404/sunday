@@ -17,6 +17,7 @@ const LLM_API_URL = 'http://localhost:8000/chat';
 const TELEGRAM_NOTIFY_URL = 'http://localhost:8000/telegram/notify';
 const TELEGRAM_NOTIFY_PHOTO_URL = 'http://localhost:8000/telegram/notify-photo';
 const API_PORT = 3000;
+const CONTACTS_FILE = path.join(__dirname, 'contacts.json');
 
 const DEFAULT_SETTINGS = {
     busyMode: false,
@@ -47,6 +48,58 @@ try {
 
 function saveWhitelist() {
     fs.writeFileSync(WHITELIST_FILE, JSON.stringify(whitelist, null, 2));
+}
+
+function loadContacts() {
+    try {
+        if (fs.existsSync(CONTACTS_FILE)) {
+            const data = JSON.parse(fs.readFileSync(CONTACTS_FILE, 'utf8'));
+            return data && typeof data === 'object' ? data : {};
+        }
+    } catch (err) {
+        console.error("Error loading contacts:", err);
+    }
+    return {};
+}
+
+function normalizeNumber(number) {
+    if (!number) return null;
+    const raw = String(number).trim();
+    if (!raw) return null;
+    if (raw.includes('@')) return raw;
+    const cleaned = raw.replace(/[^\d]/g, '');
+    if (!cleaned) return null;
+    return `${cleaned}@c.us`;
+}
+
+function importContactsToWhitelist() {
+    const contacts = loadContacts();
+    const entries = Object.values(contacts);
+    if (!entries.length) {
+        return {
+            added: 0,
+            total: 0,
+            message: "No contacts found. Create integrations/whatsapp/contacts.json first."
+        };
+    }
+    let added = 0;
+    let skipped = 0;
+    for (const entry of entries) {
+        const number = normalizeNumber(entry.number || entry.phone || entry.id);
+        if (!number) {
+            skipped += 1;
+            continue;
+        }
+        if (!whitelist.includes(number)) {
+            whitelist.push(number);
+            added += 1;
+        }
+    }
+    if (added > 0) {
+        saveWhitelist();
+    }
+    const message = `Imported ${entries.length} contacts. Added ${added}, skipped ${skipped}, total whitelisted ${whitelist.length}.`;
+    return { added, total: entries.length, message };
 }
 
 function loadSettings() {
@@ -235,6 +288,12 @@ client.on('message_create', async msg => {
 
             if (subCmd === 'list') {
                 await msg.reply(`📋 Whitelisted IDs:\n${whitelist.join('\n') || 'None'}`);
+                return;
+            }
+
+            if (subCmd === 'import') {
+                const result = importContactsToWhitelist();
+                await msg.reply(result.message);
                 return;
             }
         }

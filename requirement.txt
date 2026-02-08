@@ -24,7 +24,6 @@ chromadb
 sentence-transformers
 neo4j
 
-langgraph-checkpoint-sqlite
 todoist_api_python
 qdrant_client
 langchain_google_genai

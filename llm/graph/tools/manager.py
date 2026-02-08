@@ -1,6 +1,11 @@
 from .search import get_search
 from .time_tools import get_time_tools
-from .reminders.weakup_tools import create_reminder, list_reminders, cancel_reminder
+from .reminders.weakup_tools import (
+    create_reminder,
+    list_reminders,
+    cancel_reminder,
+    schedule_self_wakeup,
+)
 from .whatsapp import (
     add_to_whitelist,
     get_whitelist,
@@ -23,12 +28,15 @@ from .notion_tool import (
     notion_query_database,
     notion_search,
 )
+from llm.graph.tools.user_mapping import add_user_in_known_user, map_user, add_thing_to_remeber
+
 
 def get_all_tools():
     tools = [get_search]
     tools.extend(get_time_tools())
-    tools.extend([create_reminder, list_reminders, cancel_reminder])
-    tools.extend([add_to_whitelist, get_whitelist, send_whatsapp_message, lookup_contact])
+    tools.extend([create_reminder, list_reminders, cancel_reminder, schedule_self_wakeup])
+    tools.extend([add_to_whitelist, get_whitelist,
+                 send_whatsapp_message, lookup_contact])
     tools.extend(
         [
             whatsapp_get_settings,
@@ -51,4 +59,7 @@ def get_all_tools():
             notion_search,
         ]
     )
+    tools.extend([add_user_in_known_user, map_user, add_thing_to_remeber])
     return tools
+
+ALL_TOOLS = get_all_tools()

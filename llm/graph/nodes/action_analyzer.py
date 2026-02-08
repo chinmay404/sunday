@@ -45,7 +45,7 @@ def action_analyzer_node(state: ChatState):
         return {}
 
     text = _last_human_message(state)
-    if not text:
+    if not text or len(text) > 20  :
         return {}
 
     thread_id = state.get("thread_id") or "default"

@@ -4,14 +4,12 @@ import os
 import sys
 import threading
 import requests
-import sqlite3
 from pathlib import Path
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, AIMessage
 from llm.graph.tools.reminders.weakup_tools import set_current_chat_id, reset_current_chat_id
-from langgraph.checkpoint.sqlite import SqliteSaver
 from typing import Optional, Tuple
-
+from llm.graph.nodes.map_user import map_user
 # Add repo root to path
 current_dir = Path(__file__).resolve().parent
 repo_root = current_dir.parents[1]
@@ -53,15 +51,16 @@ def process_message(token, graph, message_data):
     print(f"Received message from {username} ({chat_id}): {text}")
 
     token_ctx = None
+    mapped_user_name = map_user(str(user_id))
     # Invoke the graph
     try:
         token_ctx = set_current_chat_id(str(chat_id))
         inputs = {
             "messages": [HumanMessage(content=text)],
-            "platform": "telegram",
-            "system_prompt": f"User is {username}. Respond concisely.", # Optional contextual info
+            "platform": "telegram", # Optional contextual info
             "thread_id": str(chat_id),
-            "user_name": username,
+            "user_name": str(mapped_user_name),
+            "user_id": chat_id
         }
         
         # We use a thread_id based on chat_id to maintain conversation history per user
@@ -97,15 +96,10 @@ def _should_enable_bot() -> bool:
     return flag not in {"0", "false", "no", "off"}
 
 
-def _force_sqlite() -> bool:
-    flag = os.getenv("TELEGRAM_FORCE_SQLITE", "true").strip().lower()
-    return flag not in {"0", "false", "no", "off"}
-
-
 def run_polling(graph=None, token: Optional[str] = None, stop_event: Optional[threading.Event] = None):
     load_env()
     if not _should_enable_bot():
-        print("Telegram bot disabled via TELEGRAM_BOT_ENABLE.")
+        print("Telegram bot disabled vcontractia TELEGRAM_BOT_ENABLE.")
         return
 
     token = token or os.getenv("TELEGRAM_API_TOKEN")
@@ -113,13 +107,9 @@ def run_polling(graph=None, token: Optional[str] = None, stop_event: Optional[th
         print("Error: TELEGRAM_API_TOKEN not found.")
         return
 
-    if graph is None or _force_sqlite():
-        print("Initializing Graph with SqliteSaver...")
-        # Use SqliteSaver to avoid Postgres requirement
-        db_path = repo_root / "sunday_checkpoints.sqlite"
-        conn = sqlite3.connect(str(db_path), check_same_thread=False)
-        checkpointer = SqliteSaver(conn)
-        graph = create_graph(checkpointer=checkpointer)
+    if graph is None:
+        print("Initializing Graph with PostgresSaver...")
+        graph = create_graph()
 
     print("Telegram Bot Started. Polling for updates...")
 

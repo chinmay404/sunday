@@ -26,7 +26,7 @@ def retrieve_semantic(query):
         if knowledge:
             # Format: "User works_at Climate KIC (Confidence: 1.0)"
             knowledge_strings = [f"- {k['content']} (Confidence: {k['confidence']})" for k in knowledge]
-            return "🧠 Semantic Knowledge (Graph):\n" + "\n".join(knowledge_strings)
+            return "Chinmay background::\n" + "\n".join(knowledge_strings)
     except Exception as e:
         print(f"Error retrieving semantic knowledge: {e}")
     return ""
@@ -38,7 +38,7 @@ def retrieve_episodic(query):
         memories = episodic_memory.retrieve_memories(query, k=5)
         if memories:
             mem_strings = [f"- {m['date']}: {m['content']}" for m in memories]
-            return "📖 Episodic Memory (Events):\n" + "\n".join(mem_strings)
+            return "Recent situation::\n" + "\n".join(mem_strings)
     except Exception as e:
         print(f"Error retrieving episodic memories: {e}")
     return ""
@@ -72,7 +72,7 @@ def context_gathering_node(state: ChatState):
         try:
             # This fetches from Google/Todoist APIs
             time_context = time_manager.get_time_context()
-            context_parts.append(f"⏰ Real-Time Context (Use naturally, do not explicitly mention unless relevant at the current time event or planned just after few time):\n{time_context}")
+            context_parts.append(f"Current time context (Use naturally, do not explicitly mention unless relevant at the current time event or planned just after few time):\n{time_context}")
         except Exception as e:
             print(f"Error retrieving time context: {e}")
     

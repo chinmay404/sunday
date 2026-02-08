@@ -199,6 +199,7 @@ class ChatRequest(BaseModel):
     thread_id: str = "default"
     system_prompt: str = None
     platform: str = "unknown"
+    user_id : str
 
 class ChatResponse(BaseModel):
     response: str
@@ -230,6 +231,7 @@ def chat(request: ChatRequest):
         initial_state["platform"] = request.platform
     initial_state["thread_id"] = request.thread_id
     initial_state["user_name"] = request.username
+    initial_state["user_id"] = request.user_id
 
     config = {"configurable": {"thread_id": request.thread_id}}
     

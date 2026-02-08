@@ -1,29 +1,18 @@
 import json
 import pickle
-import psycopg2
-import os
 from typing import Any, Optional, Iterator
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver, Checkpoint, CheckpointMetadata, CheckpointTuple
-from dotenv import load_dotenv
+from llm.graph.db import get_connection, get_db_config
 
 class PostgresSaver(BaseCheckpointSaver):
     def __init__(self, db_config=None):
         super().__init__()
-        load_dotenv()
-        if db_config is None:
-            self.db_config = {
-                "dbname": os.getenv("POSTGRES_DBNAME", "sunday"),
-                "user": os.getenv("POSTGRES_USER", "postgres"),
-                "password": os.getenv("POSTGRES_PASSWORD", "postgres"),
-                "host": os.getenv("POSTGRES_HOST", "127.0.0.1")
-            }
-        else:
-            self.db_config = db_config
+        self.db_config = db_config or get_db_config()
         self._init_table()
 
     def _get_connection(self):
-        return psycopg2.connect(**self.db_config)
+        return get_connection(self.db_config)
 
     def _init_table(self):
         conn = self._get_connection()

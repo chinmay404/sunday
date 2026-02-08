@@ -34,5 +34,6 @@ class ChatState(TypedDict):
     platform: NotRequired[str]
     thread_id: NotRequired[str]
     user_name: NotRequired[str]
+    user_id : NotRequired[str]
     skip_action_log: NotRequired[bool]
 

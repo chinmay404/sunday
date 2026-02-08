@@ -31,7 +31,8 @@ def main():
         initial_state = {
             "messages": [HumanMessage(content=user_input)],
             "thread_id": "default",
-            "user_name": "cli",
+            "user_name": "chinmay",
+            "user_id":"7173566704",
             "platform": "cli",
         }
         

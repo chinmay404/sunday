@@ -1,13 +1,12 @@
 import os
-import sqlite3
 import contextvars
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 from langchain_core.tools import tool
+from llm.graph.db import get_connection
 
-DB_PATH = Path(__file__).resolve().parent / "reminder.db"
 CURRENT_CHAT_ID = contextvars.ContextVar("current_telegram_chat_id", default=None)
+SELF_WAKEUP_NOTE_PREFIX = "[SELF_WAKEUP_REASON]"
 
 
 def set_current_chat_id(chat_id: Optional[str]):
@@ -67,41 +66,48 @@ def _parse_time_to_utc_iso(time_text: str) -> str:
 
 
 def init_db():
-    with sqlite3.connect(str(DB_PATH)) as conn:
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS reminders (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                time TEXT NOT NULL,
-                message TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'scheduled',
-                note TEXT,
-                chat_id TEXT
-            )
-        """)
-        cur.execute("PRAGMA table_info(reminders)")
-        cols = {row[1] for row in cur.fetchall()}
-        if "chat_id" not in cols:
-            cur.execute("ALTER TABLE reminders ADD COLUMN chat_id TEXT")
-        conn.commit()
-    
-    
-
-
-
+    conn = get_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS reminders (
+                        id SERIAL PRIMARY KEY,
+                        time TIMESTAMPTZ NOT NULL,
+                        message TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'scheduled',
+                        note TEXT,
+                        chat_id TEXT
+                    )
+                    """
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_reminders_status_time ON reminders(status, time)"
+                )
+    finally:
+        conn.close()
 
 def _create_reminder(time_iso: str, message: str, note: str = "", chat_id: Optional[str] = None):
     init_db()
     normalized_time = _parse_time_to_utc_iso(time_iso)
     effective_chat_id = chat_id or CURRENT_CHAT_ID.get() or os.getenv("TELEGRAM_CHAT_ID")
-    with sqlite3.connect(str(DB_PATH)) as conn:
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO reminders (time, message, note, chat_id) VALUES (?, ?, ?, ?)",
-            (normalized_time, message, note or None, str(effective_chat_id) if effective_chat_id else None)
-        )
-        reminder_id = cur.lastrowid
-        conn.commit()
+    conn = get_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO reminders (time, message, note, chat_id) VALUES (%s, %s, %s, %s) RETURNING id",
+                    (
+                        normalized_time,
+                        message,
+                        note or None,
+                        str(effective_chat_id) if effective_chat_id else None,
+                    ),
+                )
+                reminder_id = cur.fetchone()[0]
+    finally:
+        conn.close()
 
     return {
         "id": reminder_id,
@@ -111,6 +117,20 @@ def _create_reminder(time_iso: str, message: str, note: str = "", chat_id: Optio
         "note": note or None,
         "chat_id": str(effective_chat_id) if effective_chat_id else None
     }
+
+
+def _encode_self_wakeup_note(reason: str) -> str:
+    reason_text = (reason or "").strip()
+    return f"{SELF_WAKEUP_NOTE_PREFIX} {reason_text}".strip()
+
+
+def _decode_self_wakeup_reason(note: Optional[str]) -> Optional[str]:
+    if not isinstance(note, str):
+        return None
+    stripped = note.strip()
+    if not stripped.startswith(SELF_WAKEUP_NOTE_PREFIX):
+        return None
+    return stripped[len(SELF_WAKEUP_NOTE_PREFIX):].strip() or None
 
 
 @tool
@@ -123,33 +143,74 @@ def create_reminder(time_iso: str, message: str, note: str = "", chat_id: Option
 def list_reminders():
     """List all scheduled reminders."""
     init_db()
-    with sqlite3.connect(str(DB_PATH)) as conn:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT id, time, message, note, chat_id FROM reminders WHERE status='scheduled' ORDER BY time ASC"
-        )
-        rows = cur.fetchall()
+    conn = get_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, time, message, note, chat_id FROM reminders WHERE status='scheduled' ORDER BY time ASC"
+                )
+                rows = cur.fetchall()
+    finally:
+        conn.close()
 
     return [
-        {"id": r[0], "time": r[1], "message": r[2], "note": r[3], "chat_id": r[4]}
+        {
+            "id": r[0],
+            "time": r[1].isoformat() if hasattr(r[1], "isoformat") else r[1],
+            "message": r[2],
+            "note": r[3],
+            "self_wakeup_reason": _decode_self_wakeup_reason(r[3]),
+            "chat_id": r[4],
+        }
         for r in rows
     ]
-    
+
 
 
 @tool
 def cancel_reminder(reminder_id: int):
     """Cancel a reminder by ID."""
     init_db()
-    with sqlite3.connect(str(DB_PATH)) as conn:
-        cur = conn.cursor()
-        cur.execute(
-            "UPDATE reminders SET status='cancelled' WHERE id=?",
-            (reminder_id,)
-        )
-        conn.commit()
+    conn = get_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE reminders SET status='cancelled' WHERE id=%s",
+                    (reminder_id,),
+                )
+    finally:
+        conn.close()
 
     return {
         "id": reminder_id,
         "status": "cancelled"
     }
+
+
+@tool
+def schedule_self_wakeup(
+    time_iso: str,
+    reason: str,
+    check_in_message: str = "Check in with Chinmay now.",
+    chat_id: Optional[str] = None,
+):
+    """
+    Schedule a proactive wake-up/check-in decided by Sunday.
+    Stores the reason so the scheduler can pass it back into the agent at trigger time.
+    """
+    reason_text = (reason or "").strip()
+    if not reason_text:
+        raise ValueError("reason is required.")
+
+    message_text = (check_in_message or "").strip() or "Check in with Chinmay now."
+    reminder = _create_reminder(
+        time_iso=time_iso,
+        message=message_text,
+        note=_encode_self_wakeup_note(reason_text),
+        chat_id=chat_id,
+    )
+    reminder["kind"] = "self_wakeup"
+    reminder["reason"] = reason_text
+    return reminder
