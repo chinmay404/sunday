@@ -21,6 +21,7 @@ from .whatsapp import (
 from .telegram_tool import send_telegram_message
 from .location_tools import (
     location_current_status,
+    location_current_address,
     location_remember_place,
     location_list_places,
     location_forget_place,
@@ -59,6 +60,7 @@ def get_all_tools():
     tools.extend(
         [
             location_current_status,
+            location_current_address,
             location_remember_place,
             location_list_places,
             location_forget_place,

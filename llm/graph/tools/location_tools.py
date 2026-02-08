@@ -100,10 +100,26 @@ def location_pattern_report(user_id: Optional[str] = None):
 
 
 @tool
-def location_recent_events(user_id: Optional[str] = None, limit: int = 20):
+def location_current_address(user_id: Optional[str] = None, max_age_hours: float = 30):
+    """Resolve and show the latest known address-like label for current coordinates."""
+    resolved = _resolve_user(user_id)
+    if not resolved:
+        return "Could not resolve user id."
+    loc = location_service.get_location(resolved, max_age_hours=max_age_hours)
+    if not loc:
+        return "No recent location data available."
+    address = str(loc.get("address_short") or "").strip() or str(loc.get("address_display") or "").strip()
+    if not address:
+        return "Address not resolved yet for latest coordinates."
+    return f"Latest known address: {address}"
+
+
+@tool
+def location_recent_events(user_id: Optional[str] = None, limit: int = 20, event_type: str = ""):
     """Show recent location events (updates, place added/removed, observer prompts)."""
     resolved = _resolve_user(user_id)
-    events = location_service.get_recent_events(user_id=resolved, limit=limit)
+    chosen_type = event_type.strip() or None
+    events = location_service.get_recent_events(user_id=resolved, limit=limit, event_type=chosen_type)
     if not events:
         return "No recent location events."
     lines = ["Recent location events:"]

@@ -24,6 +24,8 @@ except Exception as e:
 DEFAULT_LOCATION_MAX_AGE_HOURS = 30.0
 LOCATION_KEYWORDS = (
     "where",
+    "address",
+    "place",
     "location",
     "home",
     "office",

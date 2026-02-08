@@ -5,7 +5,9 @@ import os
 import time
 from pathlib import Path
 from threading import RLock
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
+
+import requests
 
 
 LOCATION_FILE = Path("llm/services/user_locations.json")
@@ -15,6 +17,9 @@ PATTERN_DWELL_RADIUS_M = 250.0
 PATTERN_DWELL_MINUTES = 90
 MAX_EVENT_DAYS = 21
 MAX_EVENTS = 5000
+MAX_GEO_CACHE_DAYS = 30
+MAX_GEO_CACHE_SIZE = 3000
+REVERSE_CACHE_PRECISION = 3
 
 CURRENT_LOCATION_USER_ID = contextvars.ContextVar("current_location_user_id", default=None)
 
@@ -58,6 +63,7 @@ class LocationService:
             "aliases": {},
             "meta": {"last_pattern_prompt": {}},
             "events": [],
+            "geo_cache": {},
         }
 
     def _normalize_data(self, loaded: Dict) -> Dict:
@@ -101,6 +107,8 @@ class LocationService:
             normalized["meta"]["last_pattern_prompt"] = {}
         events = loaded.get("events")
         normalized["events"] = events if isinstance(events, list) else []
+        geo_cache = loaded.get("geo_cache")
+        normalized["geo_cache"] = geo_cache if isinstance(geo_cache, dict) else {}
         return normalized
 
     def _load_locations(self) -> None:
@@ -159,6 +167,118 @@ class LocationService:
             e for e in events if isinstance(e, dict) and float(e.get("timestamp", 0)) >= cutoff
         ][-MAX_EVENTS:]
 
+    def _reverse_geocode_enabled(self) -> bool:
+        flag = os.getenv("LOCATION_REVERSE_GEOCODE_ENABLE", "true").strip().lower()
+        return flag not in {"0", "false", "no", "off"}
+
+    def _geo_cache_key(self, latitude: float, longitude: float) -> str:
+        lat = round(float(latitude), REVERSE_CACHE_PRECISION)
+        lon = round(float(longitude), REVERSE_CACHE_PRECISION)
+        return f"{lat:.{REVERSE_CACHE_PRECISION}f},{lon:.{REVERSE_CACHE_PRECISION}f}"
+
+    def _short_address(self, addr: Dict[str, Any]) -> str:
+        if not isinstance(addr, dict):
+            return ""
+        parts = []
+        for key in (
+            "road",
+            "neighbourhood",
+            "suburb",
+            "city",
+            "town",
+            "village",
+            "state",
+            "country",
+        ):
+            value = str(addr.get(key, "")).strip()
+            if value and value not in parts:
+                parts.append(value)
+        return ", ".join(parts)
+
+    def _prune_geo_cache_unlocked(self) -> None:
+        cache = self.data.setdefault("geo_cache", {})
+        if not isinstance(cache, dict):
+            self.data["geo_cache"] = {}
+            return
+        cutoff = time.time() - (MAX_GEO_CACHE_DAYS * 86400)
+        items = [
+            (k, v)
+            for k, v in cache.items()
+            if isinstance(v, dict) and float(v.get("timestamp", 0)) >= cutoff
+        ]
+        if len(items) > MAX_GEO_CACHE_SIZE:
+            items = sorted(items, key=lambda item: float(item[1].get("timestamp", 0)))[-MAX_GEO_CACHE_SIZE:]
+        self.data["geo_cache"] = {k: v for k, v in items}
+
+    def _resolve_address_for_coordinates(self, latitude: float, longitude: float) -> Optional[Dict]:
+        self._load_locations()
+        key = self._geo_cache_key(latitude, longitude)
+
+        with self._lock:
+            cache = self.data.setdefault("geo_cache", {})
+            cached = cache.get(key) if isinstance(cache, dict) else None
+            if isinstance(cached, dict):
+                return cached
+
+        if not self._reverse_geocode_enabled():
+            return None
+
+        url = os.getenv(
+            "LOCATION_REVERSE_GEOCODE_URL",
+            "https://nominatim.openstreetmap.org/reverse",
+        ).strip()
+        try:
+            timeout = float(os.getenv("LOCATION_REVERSE_GEOCODE_TIMEOUT_SECONDS", "6"))
+        except Exception:
+            timeout = 6.0
+        user_agent = os.getenv(
+            "LOCATION_REVERSE_GEOCODE_USER_AGENT",
+            "SundayLocationBot/1.0 (local assistant)",
+        ).strip()
+
+        try:
+            resp = requests.get(
+                url,
+                params={
+                    "lat": float(latitude),
+                    "lon": float(longitude),
+                    "format": "jsonv2",
+                    "addressdetails": 1,
+                    "zoom": 18,
+                },
+                headers={"User-Agent": user_agent},
+                timeout=max(2.0, timeout),
+            )
+            resp.raise_for_status()
+            payload = resp.json() if resp.content else {}
+            if not isinstance(payload, dict):
+                return None
+
+            display_name = str(payload.get("display_name", "")).strip()
+            address_raw = payload.get("address")
+            address_obj = address_raw if isinstance(address_raw, dict) else {}
+            short = self._short_address(address_obj)
+            if not short and display_name:
+                short = display_name
+            if not display_name and short:
+                display_name = short
+            if not display_name:
+                return None
+
+            resolved = {
+                "display_name": display_name,
+                "short": short or display_name,
+                "address": address_obj,
+                "timestamp": time.time(),
+            }
+            with self._lock:
+                self.data.setdefault("geo_cache", {})[key] = resolved
+                self._prune_geo_cache_unlocked()
+            self._save_locations()
+            return resolved
+        except Exception:
+            return None
+
     def update_location(
         self,
         user_id: str,
@@ -171,6 +291,7 @@ class LocationService:
         now_ts = time.time()
         uid = str(user_id)
         cid = str(chat_id) if chat_id is not None else uid
+        address_info = self._resolve_address_for_coordinates(float(latitude), float(longitude))
 
         latest_payload = {
             "user_id": uid,
@@ -181,6 +302,9 @@ class LocationService:
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(now_ts)),
             "source": source,
         }
+        if isinstance(address_info, dict):
+            latest_payload["address_short"] = str(address_info.get("short", "")).strip()
+            latest_payload["address_display"] = str(address_info.get("display_name", "")).strip()
 
         with self._lock:
             self.data.setdefault("latest", {})[uid] = latest_payload
@@ -217,6 +341,11 @@ class LocationService:
                         "latitude": round(float(latitude), 6),
                         "longitude": round(float(longitude), 6),
                         "source": source,
+                        "address": (
+                            str(address_info.get("short", "")).strip()
+                            if isinstance(address_info, dict)
+                            else ""
+                        ),
                     },
                 )
 
@@ -360,6 +489,8 @@ class LocationService:
             "radius_m": float(radius_m),
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time())),
         }
+        if loc.get("address_short"):
+            payload["address"] = str(loc.get("address_short"))
         with self._lock:
             self.data.setdefault("places", {}).setdefault(resolved_user, {})[label_key] = payload
             self._append_event_unlocked(
@@ -446,6 +577,9 @@ class LocationService:
         else:
             summary = f"In unsaved area for about {int(dwell_minutes)} minutes."
             reason_key = f"unknown:{round(lat, 3)}:{round(lon, 3)}"
+        address_short = str(loc.get("address_short", "")).strip()
+        if address_short:
+            summary = f"{summary} Approx area: {address_short}."
 
         return {
             "available": True,
@@ -453,6 +587,7 @@ class LocationService:
             "chat_id": loc.get("chat_id"),
             "latitude": lat,
             "longitude": lon,
+            "address_short": address_short,
             "current_place": place,
             "dwell_minutes": round(dwell_minutes, 1),
             "unusual": unknown_area,
@@ -516,13 +651,18 @@ class LocationService:
 
         lat = float(loc["latitude"])
         lon = float(loc["longitude"])
+        address_short = str(loc.get("address_short", "")).strip()
         place = self.resolve_current_place(user_id, max_age_hours=max_age_hours or 30)
         if place:
-            return (
+            result = (
                 f"Last known location ({age}): lat={lat}, lon={lon}. "
                 f"Current saved place: {place['label']}."
             )
-        return f"Last known location ({age}): lat={lat}, lon={lon}."
+        else:
+            result = f"Last known location ({age}): lat={lat}, lon={lon}."
+        if address_short:
+            result = f"{result} Approx address: {address_short}."
+        return result
 
     def get_location_context(self, user_id: str, max_age_hours: float = 30) -> str:
         base = self.get_location_string(user_id, max_age_hours=max_age_hours)
@@ -588,6 +728,11 @@ class LocationService:
                     "user_id": resolved_user,
                     "has_latest": latest is not None,
                     "latest": latest,
+                    "latest_address": (
+                        str((latest or {}).get("address_short", "")).strip()
+                        if isinstance(latest, dict)
+                        else ""
+                    ),
                     "history_points": len(history) if isinstance(history, list) else 0,
                     "saved_places": sorted(list(places.keys())) if isinstance(places, dict) else [],
                     "event_count": event_count,
