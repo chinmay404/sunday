@@ -291,7 +291,8 @@ class LocationService:
         now_ts = time.time()
         uid = str(user_id)
         cid = str(chat_id) if chat_id is not None else uid
-        address_info = self._resolve_address_for_coordinates(float(latitude), float(longitude))
+        # Optimized: Do NOT resolve address synchronously here to avoid blocking bot loop.
+        # Address will be resolved lazily on read (get_location_string).
 
         latest_payload = {
             "user_id": uid,
@@ -302,9 +303,6 @@ class LocationService:
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(now_ts)),
             "source": source,
         }
-        if isinstance(address_info, dict):
-            latest_payload["address_short"] = str(address_info.get("short", "")).strip()
-            latest_payload["address_display"] = str(address_info.get("display_name", "")).strip()
 
         with self._lock:
             self.data.setdefault("latest", {})[uid] = latest_payload
@@ -341,11 +339,7 @@ class LocationService:
                         "latitude": round(float(latitude), 6),
                         "longitude": round(float(longitude), 6),
                         "source": source,
-                        "address": (
-                            str(address_info.get("short", "")).strip()
-                            if isinstance(address_info, dict)
-                            else ""
-                        ),
+                        # Address omitted for speed; resolved on demand
                     },
                 )
 
@@ -456,6 +450,7 @@ class LocationService:
                         "latitude": payload.get("latitude"),
                         "longitude": payload.get("longitude"),
                         "radius_m": payload.get("radius_m", 180),
+                        "address": str(payload.get("address", "")).strip(),
                         "created_at": payload.get("created_at"),
                     }
                 )
@@ -482,15 +477,27 @@ class LocationService:
         label_key = place_label.lower()
         self._load_locations()
         resolved_user = self._resolve_user_id(uid)
+        lat = float(loc["latitude"])
+        lon = float(loc["longitude"])
+        # Resolve address: try cached first, then lazy geocode
+        address_short = str(loc.get("address_short", "")).strip()
+        if not address_short:
+            try:
+                addr_info = self._resolve_address_for_coordinates(lat, lon)
+                if addr_info:
+                    address_short = str(addr_info.get("short", "")).strip()
+            except Exception:
+                pass
+
         payload = {
             "label": place_label,
-            "latitude": float(loc["latitude"]),
-            "longitude": float(loc["longitude"]),
+            "latitude": lat,
+            "longitude": lon,
             "radius_m": float(radius_m),
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time())),
         }
-        if loc.get("address_short"):
-            payload["address"] = str(loc.get("address_short"))
+        if address_short:
+            payload["address"] = address_short
         with self._lock:
             self.data.setdefault("places", {}).setdefault(resolved_user, {})[label_key] = payload
             self._append_event_unlocked(
@@ -651,7 +658,28 @@ class LocationService:
 
         lat = float(loc["latitude"])
         lon = float(loc["longitude"])
+        
+        # Lazy resolve address if missing
         address_short = str(loc.get("address_short", "")).strip()
+        if not address_short:
+            try:
+                addr_info = self._resolve_address_for_coordinates(lat, lon)
+                if addr_info:
+                    address_short = str(addr_info.get("short", "")).strip()
+                    # Cache back to memory/disk to avoid re-resolving next time
+                    resolved_uid = self._resolve_user_id(str(user_id))
+                    with self._lock:
+                        if self.data.get("latest", {}).get(resolved_uid):
+                            # Only update if the timestamp roughly matches (it's the same point)
+                            current_rec = self.data["latest"][resolved_uid]
+                            if abs(float(current_rec.get("timestamp", 0)) - float(loc.get("timestamp", 0))) < 0.1:
+                                current_rec["address_short"] = address_short
+                                if "address_display" not in current_rec:
+                                    current_rec["address_display"] = str(addr_info.get("display_name", "")).strip()
+                    self._save_locations()
+            except Exception:
+                pass
+
         place = self.resolve_current_place(user_id, max_age_hours=max_age_hours or 30)
         if place:
             result = (
@@ -670,15 +698,27 @@ class LocationService:
             return ""
 
         places = self.list_places(user_id)
-        place_names = [p["label"] for p in places]
+        # FIX: Include coordinates and address in the context string
+        place_details = []
+        for p in places[:8]:
+            label = p["label"]
+            lat = round(p.get("latitude", 0), 4)
+            lon = round(p.get("longitude", 0), 4)
+            addr = p.get("address", "")
+            detail = f"{label}: "
+            if addr:
+                detail += f"{addr} "
+            detail += f"({lat}, {lon})"
+            place_details.append(detail)
+
         pattern = self.analyze_pattern(user_id, max_age_hours=min(max_age_hours, 6))
 
         parts = [base]
-        if place_names:
-            parts.append(f"Saved places: {', '.join(place_names[:8])}.")
+        if place_details:
+            parts.append(f"Saved places (Reference these for search): {'; '.join(place_details)}.")
         if pattern.get("available"):
             parts.append(f"Pattern snapshot: {pattern.get('summary')}")
-        return " ".join(parts)
+        return "\n".join(parts)
 
     def get_recent_events(
         self,

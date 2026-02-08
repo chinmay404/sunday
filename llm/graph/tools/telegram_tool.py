@@ -17,14 +17,7 @@ load_dotenv(repo_root / ".env")
 
 @tool
 def send_telegram_message(message: str, chat_id: str = None):
-    """
-    Sends a message to a user via Telegram.
-    
-    Args:
-        message: The text message to send.
-        chat_id: (Optional) The chat ID to send the message to. 
-                 If not provided, it will use the default TELEGRAM_CHAT_ID from environment variables.
-    """
+    """Send a message via Telegram. Uses default chat_id if not provided."""
     token = os.getenv("TELEGRAM_API_TOKEN")
     if not token:
         return "Error: TELEGRAM_API_TOKEN not found in environment variables."

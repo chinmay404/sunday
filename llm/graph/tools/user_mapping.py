@@ -1,61 +1,66 @@
-from langchain_core.tools import tool
-# from llm.services.time_manager import TimeManager
-# from llm.graph.tools.reminders.weakup_tools import _create_reminder
 import json
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Optional
 
-@tool
-def add_user_in_known_user(user_id : str , user_name : str , description : Optional[str], **kwargs):
-    """
-    add a person in known User list 
-    """
+from langchain_core.tools import tool
+
+_USER_MAP_PATH = Path(__file__).resolve().parents[2] / "nodes" / "user_map.json"
+
+
+def _load_user_map() -> dict:
     try:
-        users = json.load(open("llm/graph/nodes/user_map.json"))
-        if user_id in users:
-            user = users[user_id]
-            return f"User Already Known as  {user}"
-        else: 
-            users[user_id] = {"user_name" : user_name , "description" : description , "Additional" : str(**kwargs)  }
-            with open("llm/graph/nodes/user_map.json" , "w") as f:
-                json.dump(users , f)
-            return f"User {user_name} added successfully"
-    except Exception as e: 
-        print(f"error in writing file : {e}")
-        return "Error in adding user"
-    
+        with open(_USER_MAP_PATH, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_user_map(data: dict) -> None:
+    with open(_USER_MAP_PATH, "w") as f:
+        json.dump(data, f, indent=2)
 
 
 @tool
-def map_user(user_id : str) :
-    """will Map user and return who is this actually"""
+def add_user_in_known_user(user_id: str, user_name: str, description: Optional[str] = None):
+    """Add a person to known users list."""
     try:
-        users = json.load(open("llm/graph/nodes/user_map.json"))
+        users = _load_user_map()
         if user_id in users:
-            user = users[user_id]
-            return user
-        else:
-            return "User Not in List Ask for Further Information"
+            return f"User already known as {users[user_id]}"
+        users[user_id] = user_name
+        _save_user_map(users)
+        return f"User {user_name} added successfully."
     except Exception as e:
-        print(f"Erorr in Mapping User : {e}")
-        return "Error in mapping user"
-
+        print(f"Error adding user: {e}")
+        return "Error adding user."
 
 
 @tool
-def add_thing_to_remeber(user_id : str , thing : str) :
-    """will add thing to remember for user"""
+def map_user(user_id: str):
+    """Look up who a user_id belongs to."""
+    users = _load_user_map()
+    if user_id in users:
+        return users[user_id]
+    return "User not in list. Ask for further information."
+
+
+@tool
+def add_thing_to_remeber(user_id: str, thing: str):
+    """Save a note/thing to remember for a user."""
     try:
-        users = json.load(open("llm/graph/nodes/user_map.json"))
-        if user_id in users:
-            user = users[user_id]
-            if "remember" not in user:
-                user["remember"] = []
-            user["remember"].append(thing)
-            with open("llm/graph/nodes/user_map.json" , "w") as f:
-                json.dump(users , f)
-            return f"Thing added to remember for user {user_id}"
-        else:
-            return "User Not in List Ask for Further Information"
+        users = _load_user_map()
+        if user_id not in users:
+            return "User not in list. Add them first."
+        # Ensure user entry is a dict for storing extras
+        entry = users[user_id]
+        if isinstance(entry, str):
+            entry = {"name": entry, "remember": []}
+        if "remember" not in entry:
+            entry["remember"] = []
+        entry["remember"].append(thing)
+        users[user_id] = entry
+        _save_user_map(users)
+        return f"Saved for {user_id}."
     except Exception as e:
-        print(f"Erorr in Adding Thing to Remember : {e}")
-        return "Error in adding thing to remember"
+        print(f"Error saving thing to remember: {e}")
+        return "Error saving."

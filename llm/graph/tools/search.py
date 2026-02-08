@@ -7,12 +7,7 @@ search = DuckDuckGoSearchRun()
 
 @tool
 def get_search(querry: str):
-    """To Search Any querry Online Given By User use this tool 
-
-    Args:
-        querry (str)
-
-    """
+    """Search the internet for any query. Returns top results."""
     if search:
         return search.invoke(querry)
-    return "Tool Faced Some Issue tell about this to user "
+    return "Search tool unavailable right now."

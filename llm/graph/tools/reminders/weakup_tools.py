@@ -135,7 +135,7 @@ def _decode_self_wakeup_reason(note: Optional[str]) -> Optional[str]:
 
 @tool
 def create_reminder(time_iso: str, message: str, note: str = "", chat_id: Optional[str] = None):
-    """Create a reminder at a specific time (ISO or natural language). Stored as UTC."""
+    """Create a reminder. Time can be ISO or natural language ('tomorrow 7pm')."""
     return _create_reminder(time_iso, message, note, chat_id)
     
     
@@ -170,7 +170,7 @@ def list_reminders():
 
 @tool
 def cancel_reminder(reminder_id: int):
-    """Cancel a reminder by ID."""
+    """Cancel a scheduled reminder by ID."""
     init_db()
     conn = get_connection()
     try:
@@ -197,8 +197,7 @@ def schedule_self_wakeup(
     chat_id: Optional[str] = None,
 ):
     """
-    Schedule a proactive wake-up/check-in decided by Sunday.
-    Stores the reason so the scheduler can pass it back into the agent at trigger time.
+    Schedule a proactive self-initiated check-in at a future time. Provide reason for the wake-up.
     """
     reason_text = (reason or "").strip()
     if not reason_text:

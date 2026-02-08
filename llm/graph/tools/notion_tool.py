@@ -238,7 +238,7 @@ def notion_create_note(
     tags_property: str = "Tags",
     title_property: Optional[str] = None,
 ) -> str:
-    """Create a Notion page (note) with optional markdown or raw blocks."""
+    """Create a Notion page/note. Supports markdown content and optional tags/properties."""
     try:
         client = NotionClient()
 
@@ -290,7 +290,7 @@ def notion_append_content(
     content: Optional[str] = None,
     blocks_json: Optional[str] = None,
 ) -> str:
-    """Append markdown or raw blocks to a Notion page."""
+    """Append markdown or blocks to an existing Notion page."""
     try:
         client = NotionClient()
         blocks = _parse_json(blocks_json, "blocks_json")
@@ -311,7 +311,7 @@ def notion_append_content(
 
 @tool
 def notion_update_page_properties(page_id: str, properties_json: str) -> str:
-    """Update page properties from a JSON payload."""
+    """Update properties of a Notion page via JSON payload."""
     try:
         client = NotionClient()
         properties = _parse_json(properties_json, "properties_json")
@@ -328,7 +328,7 @@ def notion_update_page_properties(page_id: str, properties_json: str) -> str:
 
 @tool
 def notion_get_page(page_id: str) -> str:
-    """Get basic info for a Notion page."""
+    """Get title, URL, and creation date of a Notion page."""
     try:
         client = NotionClient()
         page = client.retrieve_page(page_id)
@@ -342,7 +342,7 @@ def notion_get_page(page_id: str) -> str:
 
 @tool
 def notion_get_page_content(page_id: str, limit: int = 20) -> str:
-    """Summarize top-level blocks on a page (up to limit)."""
+    """Read top-level content blocks of a Notion page."""
     try:
         client = NotionClient()
         response = client.list_block_children(page_id, page_size=min(limit, 100))
@@ -359,7 +359,7 @@ def notion_query_database(
     sorts_json: Optional[str] = None,
     limit: int = 10,
 ) -> str:
-    """Query a Notion database with optional JSON filter/sorts."""
+    """Query a Notion database with optional JSON filter and sorts."""
     try:
         client = NotionClient()
         filter_payload = _parse_json(filter_json, "filter_json")
@@ -390,7 +390,7 @@ def notion_search(
     filter_json: Optional[str] = None,
     limit: int = 10,
 ) -> str:
-    """Search Notion (pages/databases) with optional JSON filter."""
+    """Search across all Notion pages and databases."""
     try:
         client = NotionClient()
         filter_payload = _parse_json(filter_json, "filter_json")

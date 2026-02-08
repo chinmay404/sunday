@@ -5,21 +5,23 @@ import sys
 import threading
 import requests
 from pathlib import Path
+from typing import Optional, Tuple
+
+# Add repo root to path BEFORE internal imports
+current_dir = Path(__file__).resolve().parent
+repo_root = current_dir.parents[1]
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, AIMessage
 from llm.graph.tools.reminders.weakup_tools import set_current_chat_id, reset_current_chat_id
-from typing import Optional, Tuple
 from llm.graph.nodes.map_user import map_user
 from llm.services.location_service import (
     LocationService,
     set_current_location_user_id,
     reset_current_location_user_id,
 )
-# Add repo root to path
-current_dir = Path(__file__).resolve().parent
-repo_root = current_dir.parents[1]
-if str(repo_root) not in sys.path:
-    sys.path.insert(0, str(repo_root))
 
 try:
     from llm.graph.graph import create_graph
@@ -30,9 +32,45 @@ except ImportError as e:
 
 location_service = LocationService()
 
+TELEGRAM_MAX_MESSAGE_LENGTH = 4096
+
 
 def load_env():
     load_dotenv(repo_root / ".env")
+
+
+def _send_typing(token: str, chat_id) -> None:
+    """Send 'typing...' indicator so the user knows we're working."""
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendChatAction",
+            json={"chat_id": chat_id, "action": "typing"},
+            timeout=5,
+        )
+    except Exception:
+        pass  # non-critical
+
+
+def _split_message(text: str, limit: int = TELEGRAM_MAX_MESSAGE_LENGTH) -> list[str]:
+    """Split a long message into chunks that fit Telegram's 4096-char limit."""
+    if len(text) <= limit:
+        return [text]
+    chunks = []
+    while text:
+        if len(text) <= limit:
+            chunks.append(text)
+            break
+        # Try to split at last newline within limit
+        split_at = text.rfind("\n", 0, limit)
+        if split_at < limit // 2:
+            # No good newline — split at last space
+            split_at = text.rfind(" ", 0, limit)
+        if split_at < limit // 4:
+            # No good split point — hard split
+            split_at = limit
+        chunks.append(text[:split_at])
+        text = text[split_at:].lstrip("\n")
+    return chunks
 
 def get_updates(token, offset=None, timeout=2):
     url = f"https://api.telegram.org/bot{token}/getUpdates"
@@ -84,39 +122,41 @@ def process_message(token, graph, message_data):
     token_ctx = None
     location_user_ctx = None
     mapped_user_name = map_user(str(user_id))
+
+    # Show typing indicator immediately so user knows we're processing
+    _send_typing(token, chat_id)
+
     # Invoke the graph
     try:
         token_ctx = set_current_chat_id(str(chat_id))
         location_user_ctx = set_current_location_user_id(str(user_id))
         inputs = {
             "messages": [HumanMessage(content=text)],
-            "platform": "telegram", # Optional contextual info
+            "platform": "telegram",
             "thread_id": str(chat_id),
             "user_name": str(mapped_user_name),
             "user_id": str(user_id),
         }
         
-        # We use a thread_id based on chat_id to maintain conversation history per user
         config = {"configurable": {"thread_id": str(chat_id)}}
         
-        # Invoke graph
         result = graph.invoke(inputs, config=config)
         
-        # Extract response from the last AI message
         messages = result.get("messages", [])
         last_ai = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
-        if last_ai:
-            response_text = last_ai.content
-            
-            # Send response back to Telegram
-            send_message(token, chat_id, response_text, None, False)
-            print(f"Sent response to {username}: {response_text}")
+        if last_ai and last_ai.content:
+            # Split long messages to respect Telegram's 4096-char limit
+            for chunk in _split_message(last_ai.content):
+                send_message(token, chat_id, chunk, None, False)
+            print(f"Sent response to {username}: {last_ai.content[:120]}...")
             
     except Exception as e:
         error_msg = f"Error processing message: {e}"
         print(error_msg)
-        # Optional: send error message to user
-        # send_message(token, chat_id, "Sorry, I encountered an error processing your request.", None, False)
+        try:
+            send_message(token, chat_id, "Something broke on my end. Give me a sec and try again.", None, False)
+        except Exception:
+            pass
     finally:
         if token_ctx is not None:
             try:
@@ -137,7 +177,7 @@ def _should_enable_bot() -> bool:
 def run_polling(graph=None, token: Optional[str] = None, stop_event: Optional[threading.Event] = None):
     load_env()
     if not _should_enable_bot():
-        print("Telegram bot disabled vcontractia TELEGRAM_BOT_ENABLE.")
+        print("Telegram bot disabled via TELEGRAM_BOT_ENABLE.")
         return
 
     token = token or os.getenv("TELEGRAM_API_TOKEN")

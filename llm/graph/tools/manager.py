@@ -39,6 +39,7 @@ from .notion_tool import (
     notion_search,
 )
 from llm.graph.tools.user_mapping import add_user_in_known_user, map_user, add_thing_to_remeber
+from .utility_tools import search_memory, forget_memory, read_webpage
 
 
 def get_all_tools():
@@ -82,6 +83,7 @@ def get_all_tools():
         ]
     )
     tools.extend([add_user_in_known_user, map_user, add_thing_to_remeber])
+    tools.extend([search_memory, forget_memory, read_webpage])
     return tools
 
 ALL_TOOLS = get_all_tools()

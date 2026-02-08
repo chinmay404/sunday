@@ -11,7 +11,6 @@ from llm.services.location_service import LocationService
 try:
     episodic_memory = EpisodicMemory()
     semantic_memory = SemanticMemory()
-    # This will trigger Auth flows if credentials exist
     time_manager = TimeManager()
     location_service = LocationService()
 except Exception as e:
@@ -21,35 +20,10 @@ except Exception as e:
     time_manager = None
     location_service = None
 
+# Reuse a single thread pool across all requests instead of creating one per message
+_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+
 DEFAULT_LOCATION_MAX_AGE_HOURS = 30.0
-LOCATION_KEYWORDS = (
-    "where",
-    "address",
-    "place",
-    "location",
-    "home",
-    "office",
-    "work",
-    "near",
-    "nearby",
-    "around me",
-    "distance",
-    "closest",
-    "nearest",
-    "route",
-    "directions",
-    "coffee shop",
-    "restaurant",
-    "gym",
-)
-
-
-def _location_context_enabled_for_query(query: str) -> bool:
-    mode = os.getenv("LOCATION_CONTEXT_MODE", "on_demand").strip().lower()
-    if mode in {"always", "all"}:
-        return True
-    lowered = (query or "").lower()
-    return any(keyword in lowered for keyword in LOCATION_KEYWORDS)
 
 
 def _location_max_age_hours() -> float:
@@ -118,9 +92,12 @@ def context_gathering_node(state: ChatState):
         except Exception as e:
             print(f"Error retrieving time context: {e}")
 
-    # 1.5. Location context (only when query is location-relevant unless configured otherwise)
-    if location_service and state.get("user_id") and _location_context_enabled_for_query(str(query)):
+    # 1.5. Location context (Inject if available and recent, regardless of query keywords)
+    if location_service and state.get("user_id"):
         try:
+            # We use a strict max_age (e.g. 2-4 hours) for "implicit" context
+            # to avoid referencing stale locations for general queries.
+            # But here we let the service decide or use the configured default.
             loc = location_service.get_location_context(
                 str(state.get("user_id")),
                 max_age_hours=_location_max_age_hours(),
@@ -130,18 +107,17 @@ def context_gathering_node(state: ChatState):
         except Exception as e:
             print(f"Error retrieving location context: {e}")
     
-    # 2. Parallel Memory Retrieval
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        future_semantic = executor.submit(retrieve_semantic, query)
-        future_episodic = executor.submit(retrieve_episodic, query)
-        
-        semantic_result = future_semantic.result()
-        episodic_result = future_episodic.result()
-        
-        if semantic_result:
-            context_parts.append(semantic_result)
-        if episodic_result:
-            context_parts.append(episodic_result)
+    # 2. Parallel Memory Retrieval (reuse module-level pool)
+    future_semantic = _executor.submit(retrieve_semantic, query)
+    future_episodic = _executor.submit(retrieve_episodic, query)
+
+    semantic_result = future_semantic.result(timeout=10)
+    episodic_result = future_episodic.result(timeout=10)
+
+    if semantic_result:
+        context_parts.append(semantic_result)
+    if episodic_result:
+        context_parts.append(episodic_result)
             
     final_context = "\n\n".join(context_parts)
     

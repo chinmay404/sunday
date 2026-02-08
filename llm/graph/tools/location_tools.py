@@ -20,7 +20,7 @@ def _resolve_user(user_id: Optional[str]) -> Optional[str]:
 
 @tool
 def location_current_status(user_id: Optional[str] = None, max_age_hours: float = 30):
-    """Get the latest known location context for a user."""
+    """Get current location context: coordinates, place, address."""
     resolved = _resolve_user(user_id)
     if not resolved:
         return "Could not resolve user id for location lookup."
@@ -30,10 +30,7 @@ def location_current_status(user_id: Optional[str] = None, max_age_hours: float 
 
 @tool
 def location_remember_place(label: str, radius_m: float = 180, user_id: Optional[str] = None):
-    """
-    Remember current location as a named place (example: home, office, gym).
-    Uses latest tracked coordinates for this user.
-    """
+    """Save current location as a named place (home, office, gym, etc)."""
     resolved = _resolve_user(user_id)
     if not resolved:
         return "Could not resolve user id. Provide user_id explicitly."
@@ -82,7 +79,7 @@ def location_forget_place(label: str, user_id: Optional[str] = None):
 
 @tool
 def location_pattern_report(user_id: Optional[str] = None):
-    """Return current location pattern analysis for debugging or proactive planning."""
+    """Analyze current location patterns: dwell time, unusual activity."""
     resolved = _resolve_user(user_id)
     if not resolved:
         return "Could not resolve user id."
@@ -101,22 +98,20 @@ def location_pattern_report(user_id: Optional[str] = None):
 
 @tool
 def location_current_address(user_id: Optional[str] = None, max_age_hours: float = 30):
-    """Resolve and show the latest known address-like label for current coordinates."""
+    """Get human-readable address for current coordinates."""
     resolved = _resolve_user(user_id)
     if not resolved:
         return "Could not resolve user id."
-    loc = location_service.get_location(resolved, max_age_hours=max_age_hours)
-    if not loc:
+    # Use get_location_string which does lazy geocode if address is missing
+    result = location_service.get_location_string(resolved, max_age_hours=max_age_hours)
+    if not result:
         return "No recent location data available."
-    address = str(loc.get("address_short") or "").strip() or str(loc.get("address_display") or "").strip()
-    if not address:
-        return "Address not resolved yet for latest coordinates."
-    return f"Latest known address: {address}"
+    return result
 
 
 @tool
 def location_recent_events(user_id: Optional[str] = None, limit: int = 20, event_type: str = ""):
-    """Show recent location events (updates, place added/removed, observer prompts)."""
+    """Show recent location events (updates, place changes, observer prompts)."""
     resolved = _resolve_user(user_id)
     chosen_type = event_type.strip() or None
     events = location_service.get_recent_events(user_id=resolved, limit=limit, event_type=chosen_type)
@@ -125,16 +120,16 @@ def location_recent_events(user_id: Optional[str] = None, limit: int = 20, event
     lines = ["Recent location events:"]
     for event in events:
         ts = event.get("timestamp")
-        event_type = event.get("event_type")
+        evt_type = event.get("event_type")
         uid = event.get("user_id")
         details = event.get("details") or {}
-        lines.append(f"- ts={ts} type={event_type} user={uid} details={details}")
+        lines.append(f"- ts={ts} type={evt_type} user={uid} details={details}")
     return "\n".join(lines)
 
 
 @tool
 def location_debug_summary(user_id: Optional[str] = None):
-    """Show location system summary: tracked users, latest point, places, and event counts."""
+    """Debug: show tracked users, latest point, places, event counts."""
     resolved = _resolve_user(user_id)
     summary = location_service.get_debug_summary(user_id=resolved)
     return str(summary)

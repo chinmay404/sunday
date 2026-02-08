@@ -6,13 +6,13 @@ from typing import Optional
 from langchain_core.tools import tool
 from difflib import get_close_matches
 
-# Paths
-# Assuming we are running from root 'sunday/'
-BASE_DIR = os.getcwd()
-WHITELIST_PATH = os.path.join(BASE_DIR, 'integrations', 'whatsapp', 'whitelist.json')
-CONTACTS_PATH = os.path.join(BASE_DIR, 'integrations', 'whatsapp', 'contacts.json')
-SETTINGS_PATH = os.path.join(BASE_DIR, 'integrations', 'whatsapp', 'settings.json')
-PENDING_PATH = os.path.join(BASE_DIR, 'integrations', 'whatsapp', 'pending.json')
+# Paths — use file-relative path so it works regardless of CWD
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_WA_DIR = os.path.join(os.path.dirname(_REPO_ROOT), 'integrations', 'whatsapp')
+WHITELIST_PATH = os.path.join(_WA_DIR, 'whitelist.json')
+CONTACTS_PATH = os.path.join(_WA_DIR, 'contacts.json')
+SETTINGS_PATH = os.path.join(_WA_DIR, 'settings.json')
+PENDING_PATH = os.path.join(_WA_DIR, 'pending.json')
 WHATSAPP_API_URL = "http://localhost:3000/send"
 
 DEFAULT_SETTINGS = {
@@ -74,9 +74,7 @@ def load_contacts():
 
 @tool
 def lookup_contact(name: str):
-    """
-    Looks up a contact's phone number by name from the imported contacts list.
-    """
+    """Look up a contact's phone number by name. Supports fuzzy matching."""
     contacts = load_contacts()
     if not contacts:
         return "No contacts found. Please import contacts.vcf using manage_whatsapp.py"
@@ -104,7 +102,7 @@ def whatsapp_get_settings():
 
 @tool
 def whatsapp_set_busy_mode(enabled: Optional[bool] = None, auto_send: Optional[bool] = None, reply_template: Optional[str] = None):
-    """Set busy mode and approval/auto-send behavior."""
+    """Toggle busy mode, set auto-send or approval mode, and customize reply template."""
     settings = _load_settings()
     if enabled is not None:
         settings["busyMode"] = bool(enabled)
@@ -191,11 +189,7 @@ def whatsapp_reject_pending(pending_id: str):
 
 @tool
 def add_to_whitelist(phone_number: str):
-
-    """
-    Adds a phone number to the WhatsApp whitelist.
-    The number should be in the format '1234567890@c.us' or just digits '1234567890'.
-    """
+    """Add a phone number to the WhatsApp whitelist. Accepts raw digits or JID format."""
     if not phone_number.endswith("@c.us") and "@" not in phone_number:
         phone_number = f"{phone_number}@c.us"
     
@@ -230,11 +224,7 @@ def get_whitelist():
 
 @tool
 def send_whatsapp_message(target: str, message: str):
-    """
-    Sends a WhatsApp message to a specific number or contact name.
-    Input 'target' can be a phone number (e.g., '1234567890') or a Contact Name (e.g., 'Mom').
-    If a name is provided, it tries to look it up in the contacts list.
-    """
+    """Send a WhatsApp message. Target can be a phone number or contact name."""
     # 1. Try to resolve contact name if it doesn't look like a number
     final_number = target
     if "@" in target:

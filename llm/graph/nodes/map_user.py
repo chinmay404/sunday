@@ -1,14 +1,17 @@
 import json
+from pathlib import Path
 
-def map_user(user_id : str) : 
-    """will Map user and return who is this actually"""
+_USER_MAP_PATH = Path(__file__).resolve().parent / "user_map.json"
+
+
+def map_user(user_id: str) -> str:
+    """Map a user_id to a known name."""
     try:
-        users = json.load(open("llm/graph/nodes/user_map.json"))
+        with open(_USER_MAP_PATH, "r") as f:
+            users = json.load(f)
         if user_id in users:
-            user = users[user_id]
-            return user
-        else:
-            return "User Not in List Ask for Further Information"
+            return users[user_id]
+        return "User Not in List Ask for Further Information"
     except Exception as e:
-        print(f"Erorr in Mapping User : {e}")    
-    
+        print(f"Error in Mapping User: {e}")
+        return "Unknown"
