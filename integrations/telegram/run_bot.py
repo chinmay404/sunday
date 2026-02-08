@@ -10,6 +10,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from llm.graph.tools.reminders.weakup_tools import set_current_chat_id, reset_current_chat_id
 from typing import Optional, Tuple
 from llm.graph.nodes.map_user import map_user
+from llm.services.location_service import LocationService
 # Add repo root to path
 current_dir = Path(__file__).resolve().parent
 repo_root = current_dir.parents[1]
@@ -23,12 +24,18 @@ except ImportError as e:
     print(f"Import Error: {e}")
     sys.exit(1)
 
+location_service = LocationService()
+
+
 def load_env():
     load_dotenv(repo_root / ".env")
 
 def get_updates(token, offset=None, timeout=2):
     url = f"https://api.telegram.org/bot{token}/getUpdates"
-    params = {"timeout": timeout}
+    params = {
+        "timeout": timeout,
+        "allowed_updates": '["message","edited_message"]'
+    }
     if offset:
         params["offset"] = offset
     
@@ -41,9 +48,29 @@ def get_updates(token, offset=None, timeout=2):
 
 def process_message(token, graph, message_data):
     chat_id = message_data["chat"]["id"]
-    text = message_data.get("text", "")
     user_id = message_data["from"]["id"]
     username = message_data["from"].get("username", "Unknown")
+    text = message_data.get("text", "") or message_data.get("caption", "")
+
+    # Location updates can come as new messages or edited messages (live location ticks).
+    if "location" in message_data:
+        loc = message_data.get("location", {})
+        lat = loc.get("latitude")
+        lng = loc.get("longitude")
+        if lat is not None and lng is not None:
+            print(f"Location update from {username} ({chat_id}): {lat}, {lng}")
+            location_service.update_location(
+                user_id=str(user_id),
+                latitude=lat,
+                longitude=lng,
+                chat_id=str(chat_id),
+            )
+            # For live location edits, avoid triggering the LLM every movement.
+            if "edit_date" in message_data and not text:
+                return
+            # For pure location share without text/caption, save silently.
+            if not text:
+                return
     
     if not text:
         return
@@ -60,7 +87,7 @@ def process_message(token, graph, message_data):
             "platform": "telegram", # Optional contextual info
             "thread_id": str(chat_id),
             "user_name": str(mapped_user_name),
-            "user_id": chat_id
+            "user_id": str(user_id),
         }
         
         # We use a thread_id based on chat_id to maintain conversation history per user
@@ -129,6 +156,10 @@ def run_polling(graph=None, token: Optional[str] = None, stop_event: Optional[th
                 
                 if "message" in update:
                     process_message(token, graph, update["message"])
+                if "edited_message" in update:
+                    edited = update["edited_message"]
+                    if "location" in edited:
+                        process_message(token, graph, edited)
         
         time.sleep(1)
 

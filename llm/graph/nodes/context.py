@@ -1,9 +1,11 @@
 import concurrent.futures
+import os
 from langchain_core.messages import HumanMessage
 from llm.graph.states.state import ChatState
 from llm.graph.memory.episodic_memeory import EpisodicMemory
 from llm.graph.memory.semantic_memory import SemanticMemory
 from llm.services.time_manager import TimeManager
+from llm.services.location_service import LocationService
 
 # Initialize Services
 try:
@@ -11,11 +13,46 @@ try:
     semantic_memory = SemanticMemory()
     # This will trigger Auth flows if credentials exist
     time_manager = TimeManager()
+    location_service = LocationService()
 except Exception as e:
     print(f"Warning: Could not initialize Services in context node: {e}")
     episodic_memory = None
     semantic_memory = None
     time_manager = None
+    location_service = None
+
+DEFAULT_LOCATION_MAX_AGE_HOURS = 30.0
+LOCATION_KEYWORDS = (
+    "where",
+    "location",
+    "near",
+    "nearby",
+    "around me",
+    "distance",
+    "closest",
+    "nearest",
+    "route",
+    "directions",
+    "coffee shop",
+    "restaurant",
+    "gym",
+)
+
+
+def _location_context_enabled_for_query(query: str) -> bool:
+    mode = os.getenv("LOCATION_CONTEXT_MODE", "on_demand").strip().lower()
+    if mode in {"always", "all"}:
+        return True
+    lowered = (query or "").lower()
+    return any(keyword in lowered for keyword in LOCATION_KEYWORDS)
+
+
+def _location_max_age_hours() -> float:
+    raw = os.getenv("LOCATION_MAX_AGE_HOURS", str(DEFAULT_LOCATION_MAX_AGE_HOURS)).strip()
+    try:
+        return max(1.0, float(raw))
+    except Exception:
+        return DEFAULT_LOCATION_MAX_AGE_HOURS
 
 def retrieve_semantic(query):
     if not semantic_memory:
@@ -75,6 +112,18 @@ def context_gathering_node(state: ChatState):
             context_parts.append(f"Current time context (Use naturally, do not explicitly mention unless relevant at the current time event or planned just after few time):\n{time_context}")
         except Exception as e:
             print(f"Error retrieving time context: {e}")
+
+    # 1.5. Location context (only when query is location-relevant unless configured otherwise)
+    if location_service and state.get("user_id") and _location_context_enabled_for_query(str(query)):
+        try:
+            loc = location_service.get_location_string(
+                str(state.get("user_id")),
+                max_age_hours=_location_max_age_hours(),
+            )
+            if loc:
+                context_parts.append(f"User context:\n{loc}")
+        except Exception as e:
+            print(f"Error retrieving location context: {e}")
     
     # 2. Parallel Memory Retrieval
     with concurrent.futures.ThreadPoolExecutor() as executor:

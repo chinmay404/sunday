@@ -40,3 +40,6 @@ Thumbs.db
 llm/graph/tools/google/google_auth.json
 llm/graph/tools/google/token.json
 llm/graph/habits/habits.db
+sunday_checkpoints.sqlite-shm
+sunday_checkpoints.sqlite-wal
+llm/services/user_locations.json

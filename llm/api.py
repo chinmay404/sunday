@@ -23,6 +23,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 import uvicorn
 from contextlib import asynccontextmanager
 from llm.graph.habits.scheduler import start_habit_scheduler
+from llm.graph.tools.reminders.daily_briefing import start_daily_briefing_scheduler
 from integrations.telegram.send_telegram import send_message as send_telegram_api
 
 WHATSAPP_STATUS_URL = os.getenv("WHATSAPP_STATUS_URL", "http://localhost:3000/status")
@@ -132,12 +133,14 @@ scheduler_thread = None
 scheduler_stop_event = None
 habit_thread = None
 habit_stop_event = None
+daily_briefing_thread = None
+daily_briefing_stop_event = None
 whatsapp_process = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Load the graph on startup
-    global graph, telegram_thread, telegram_stop_event, scheduler_thread, scheduler_stop_event, habit_thread, habit_stop_event, whatsapp_process
+    global graph, telegram_thread, telegram_stop_event, scheduler_thread, scheduler_stop_event, habit_thread, habit_stop_event, daily_briefing_thread, daily_briefing_stop_event, whatsapp_process
     print("Initialize Graph...")
     graph = create_graph()
     try:
@@ -154,6 +157,10 @@ async def lifespan(app: FastAPI):
         habit_thread, habit_stop_event = start_habit_scheduler()
     except Exception as e:
         print(f"Habit analyzer not started: {e}")
+    try:
+        daily_briefing_thread, daily_briefing_stop_event = start_daily_briefing_scheduler(graph=graph)
+    except Exception as e:
+        print(f"Daily briefing scheduler not started: {e}")
     try:
         _start_whatsapp_bot()
     except Exception as e:
@@ -176,6 +183,10 @@ async def lifespan(app: FastAPI):
         habit_stop_event.set()
         if habit_thread:
             habit_thread.join(timeout=5)
+    if daily_briefing_stop_event:
+        daily_briefing_stop_event.set()
+        if daily_briefing_thread:
+            daily_briefing_thread.join(timeout=5)
     if whatsapp_process:
         try:
             whatsapp_process.terminate()
