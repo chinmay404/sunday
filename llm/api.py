@@ -24,6 +24,8 @@ import uvicorn
 from contextlib import asynccontextmanager
 from llm.graph.habits.scheduler import start_habit_scheduler
 from llm.graph.tools.reminders.daily_briefing import start_daily_briefing_scheduler
+from llm.graph.tools.reminders.location_observer import start_location_observer_scheduler
+from llm.services.location_service import set_current_location_user_id, reset_current_location_user_id
 from integrations.telegram.send_telegram import send_message as send_telegram_api
 
 WHATSAPP_STATUS_URL = os.getenv("WHATSAPP_STATUS_URL", "http://localhost:3000/status")
@@ -135,12 +137,14 @@ habit_thread = None
 habit_stop_event = None
 daily_briefing_thread = None
 daily_briefing_stop_event = None
+location_observer_thread = None
+location_observer_stop_event = None
 whatsapp_process = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Load the graph on startup
-    global graph, telegram_thread, telegram_stop_event, scheduler_thread, scheduler_stop_event, habit_thread, habit_stop_event, daily_briefing_thread, daily_briefing_stop_event, whatsapp_process
+    global graph, telegram_thread, telegram_stop_event, scheduler_thread, scheduler_stop_event, habit_thread, habit_stop_event, daily_briefing_thread, daily_briefing_stop_event, location_observer_thread, location_observer_stop_event, whatsapp_process
     print("Initialize Graph...")
     graph = create_graph()
     try:
@@ -161,6 +165,10 @@ async def lifespan(app: FastAPI):
         daily_briefing_thread, daily_briefing_stop_event = start_daily_briefing_scheduler(graph=graph)
     except Exception as e:
         print(f"Daily briefing scheduler not started: {e}")
+    try:
+        location_observer_thread, location_observer_stop_event = start_location_observer_scheduler(graph=graph)
+    except Exception as e:
+        print(f"Location observer scheduler not started: {e}")
     try:
         _start_whatsapp_bot()
     except Exception as e:
@@ -187,6 +195,10 @@ async def lifespan(app: FastAPI):
         daily_briefing_stop_event.set()
         if daily_briefing_thread:
             daily_briefing_thread.join(timeout=5)
+    if location_observer_stop_event:
+        location_observer_stop_event.set()
+        if location_observer_thread:
+            location_observer_thread.join(timeout=5)
     if whatsapp_process:
         try:
             whatsapp_process.terminate()
@@ -247,7 +259,10 @@ def chat(request: ChatRequest):
     config = {"configurable": {"thread_id": request.thread_id}}
     
     print(f"Processing message for thread {request.thread_id}...")
+    location_user_ctx = None
     try:
+        if request.user_id:
+            location_user_ctx = set_current_location_user_id(str(request.user_id))
         # Invoke the graph synchronously
         result = graph.invoke(initial_state, config=config)
         
@@ -261,6 +276,12 @@ def chat(request: ChatRequest):
     except Exception as e:
         print(f"Error processing message: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if location_user_ctx is not None:
+            try:
+                reset_current_location_user_id(location_user_ctx)
+            except Exception:
+                pass
 
 @app.post("/telegram/notify")
 def telegram_notify(request: TelegramNotifyRequest):

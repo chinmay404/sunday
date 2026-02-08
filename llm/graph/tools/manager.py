@@ -19,6 +19,13 @@ from .whatsapp import (
     whatsapp_reject_pending,
 )
 from .telegram_tool import send_telegram_message
+from .location_tools import (
+    location_current_status,
+    location_remember_place,
+    location_list_places,
+    location_forget_place,
+    location_pattern_report,
+)
 from .notion_tool import (
     notion_create_note,
     notion_append_content,
@@ -45,6 +52,15 @@ def get_all_tools():
             whatsapp_approve_pending,
             whatsapp_reply_pending,
             whatsapp_reject_pending,
+        ]
+    )
+    tools.extend(
+        [
+            location_current_status,
+            location_remember_place,
+            location_list_places,
+            location_forget_place,
+            location_pattern_report,
         ]
     )
     tools.append(send_telegram_message)

@@ -25,6 +25,9 @@ DEFAULT_LOCATION_MAX_AGE_HOURS = 30.0
 LOCATION_KEYWORDS = (
     "where",
     "location",
+    "home",
+    "office",
+    "work",
     "near",
     "nearby",
     "around me",
@@ -116,7 +119,7 @@ def context_gathering_node(state: ChatState):
     # 1.5. Location context (only when query is location-relevant unless configured otherwise)
     if location_service and state.get("user_id") and _location_context_enabled_for_query(str(query)):
         try:
-            loc = location_service.get_location_string(
+            loc = location_service.get_location_context(
                 str(state.get("user_id")),
                 max_age_hours=_location_max_age_hours(),
             )

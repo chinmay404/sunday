@@ -10,7 +10,11 @@ from langchain_core.messages import HumanMessage, AIMessage
 from llm.graph.tools.reminders.weakup_tools import set_current_chat_id, reset_current_chat_id
 from typing import Optional, Tuple
 from llm.graph.nodes.map_user import map_user
-from llm.services.location_service import LocationService
+from llm.services.location_service import (
+    LocationService,
+    set_current_location_user_id,
+    reset_current_location_user_id,
+)
 # Add repo root to path
 current_dir = Path(__file__).resolve().parent
 repo_root = current_dir.parents[1]
@@ -78,10 +82,12 @@ def process_message(token, graph, message_data):
     print(f"Received message from {username} ({chat_id}): {text}")
 
     token_ctx = None
+    location_user_ctx = None
     mapped_user_name = map_user(str(user_id))
     # Invoke the graph
     try:
         token_ctx = set_current_chat_id(str(chat_id))
+        location_user_ctx = set_current_location_user_id(str(user_id))
         inputs = {
             "messages": [HumanMessage(content=text)],
             "platform": "telegram", # Optional contextual info
@@ -115,6 +121,11 @@ def process_message(token, graph, message_data):
         if token_ctx is not None:
             try:
                 reset_current_chat_id(token_ctx)
+            except Exception:
+                pass
+        if location_user_ctx is not None:
+            try:
+                reset_current_location_user_id(location_user_ctx)
             except Exception:
                 pass
 
