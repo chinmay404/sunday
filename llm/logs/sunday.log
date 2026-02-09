@@ -1,0 +1,6 @@
+11:12:29 | WARNING | google_genai._api_client | Both GOOGLE_API_KEY and GEMINI_API_KEY are set. Using GOOGLE_API_KEY.
+11:12:29 | WARNING | google_genai._api_client | Both GOOGLE_API_KEY and GEMINI_API_KEY are set. Using GOOGLE_API_KEY.
+11:12:29 | WARNING | google_genai._api_client | Both GOOGLE_API_KEY and GEMINI_API_KEY are set. Using GOOGLE_API_KEY.
+11:12:29 | WARNING | google_genai._api_client | Both GOOGLE_API_KEY and GEMINI_API_KEY are set. Using GOOGLE_API_KEY.
+11:17:25 | INFO    | integrations.telegram.run_bot | Telegram Bot Started. Polling for updates...
+11:17:25 | INFO    | __main__ | Sunday Agent Initialized. Type 'quit' to exit.

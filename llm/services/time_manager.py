@@ -1,5 +1,6 @@
 import os
 import json
+import logging
 import datetime
 from datetime import timedelta
 from google.auth.transport.requests import Request
@@ -11,6 +12,8 @@ from dotenv import load_dotenv
 
 # If modifying these scopes, delete the file token.json.
 SCOPES = ['https://www.googleapis.com/auth/calendar']
+
+logger = logging.getLogger(__name__)
 
 class TimeManager:
     def __init__(self):
@@ -113,10 +116,9 @@ class TimeManager:
                     context["calendar_events"].append({
                         "summary": event.get('summary', 'No Title'),
                         "start": start,
-                        "link": event.get('htmlLink')
                     })
             except Exception as e:
-                print(f"Error fetching calendar: {e}")
+                logger.error("Error fetching calendar: %s", e)
 
         # 2. Fetch Todoist Tasks
         if self.todoist:
@@ -132,20 +134,29 @@ class TimeManager:
 
                         normalized.append((content, due_date, priority))
                     except Exception as inner_err:
-                        print(f"Skipping todo item due to parsing error: {inner_err}")
+                        logger.warning("Skipping todo item due to parsing error: %s", inner_err)
                         continue
 
                 # Sort by due date, keep undated tasks last
                 normalized.sort(key=lambda t: t[1] if t[1] else "9999-12-31")
 
                 for content, due_date, priority in normalized[:5]:  # Top 5 regardless of filters
+                    # Skip useless placeholder tasks
+                    if not content or content.strip().lower() in ("unknown task", ""):
+                        continue
                     context["pending_tasks"].append({
                         "content": content,
                         "due": due_date if due_date else "No date",
                         "priority": priority
                     })
             except Exception as e:
-                print(f"Error fetching todos: {e}")
+                logger.error("Error fetching todos: %s", e)
+
+        # Drop empty sections to save tokens
+        if not context["pending_tasks"]:
+            del context["pending_tasks"]
+        if not context["calendar_events"]:
+            del context["calendar_events"]
 
         return json.dumps(context, indent=2)
 

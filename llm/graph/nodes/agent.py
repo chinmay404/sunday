@@ -1,9 +1,13 @@
+import logging
 from pathlib import Path
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from llm.graph.states.state import ChatState
 from llm.graph.model.llm import get_llm
 from llm.graph.tools.manager import ALL_TOOLS
 from llm.graph.nodes.map_user import map_user
+from llm.graph.nodes.helpers import extract_text
+
+logger = logging.getLogger(__name__)
 
 
 PROMPT_DIR = Path(__file__).resolve().parents[2] / "prompts"
@@ -102,5 +106,13 @@ def agent_node(state: ChatState):
         rebuilt.append(latest_summary)
     rebuilt.extend(window)
 
+    # Log full prompt assembly
+    logger.info("🤖 [Agent] speaker=%s platform=%s msgs=%d tools=%d", current_speaker, platform, len(rebuilt), len(ALL_TOOLS))
+    for i, msg in enumerate(rebuilt):
+        tag = type(msg).__name__
+        preview = (msg.content or "")[:200].replace("\n", " ")
+        logger.debug("  [%d] %s: %s%s", i, tag, preview, "…" if len(msg.content or "") > 200 else "")
+
     response = llm_with_tools.invoke(rebuilt)
+    logger.info("🤖 [Agent] Response: %s", extract_text(response.content)[:150])
     return {"messages": [response]}

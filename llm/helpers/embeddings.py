@@ -14,4 +14,4 @@ def get_embeddings():
     if "GOOGLE_API_KEY" not in os.environ:
         raise ValueError("GOOGLE_API_KEY not found in environment variables. Please set it to use Google Gemini Embeddings.")
 
-    return GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
+    return GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001")

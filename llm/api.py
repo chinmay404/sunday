@@ -1,3 +1,4 @@
+import logging
 import sys
 from pathlib import Path
 import os
@@ -13,6 +14,11 @@ root_dir = current_dir.parent
 if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
+from llm.logging_config import setup_logging
+setup_logging()
+
+logger = logging.getLogger(__name__)
+
 load_dotenv(root_dir / ".env")
 
 from fastapi import FastAPI, HTTPException
@@ -20,6 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from llm.graph.graph import create_graph
 from langchain_core.messages import HumanMessage, AIMessage
+from llm.graph.nodes.helpers import extract_text
 import uvicorn
 from contextlib import asynccontextmanager
 from llm.graph.habits.scheduler import start_habit_scheduler
@@ -51,12 +58,12 @@ def _whatsapp_status():
 def _start_whatsapp_bot():
     global whatsapp_process
     if not WHATSAPP_BOT_AUTOSTART:
-        print("WhatsApp bot autostart disabled.")
+        logger.info("WhatsApp bot autostart disabled.")
         return
 
     existing = _whatsapp_status()
     if existing is not None:
-        print("WhatsApp server already running.")
+        logger.info("WhatsApp server already running.")
         return
 
     bot_dir = root_dir / "integrations" / "whatsapp"
@@ -67,21 +74,21 @@ def _start_whatsapp_bot():
             cwd=str(bot_dir),
             env=os.environ.copy(),
         )
-        print(f"Started WhatsApp bot with PID {whatsapp_process.pid}")
+        logger.info("Started WhatsApp bot with PID %s", whatsapp_process.pid)
     except Exception as exc:
-        print(f"Failed to start WhatsApp bot: {exc}")
+        logger.error("Failed to start WhatsApp bot: %s", exc)
 
 
 def _notify_whatsapp_status():
     token = os.getenv("TELEGRAM_API_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
-        print("Skipping WhatsApp status notify: TELEGRAM_API_TOKEN or TELEGRAM_CHAT_ID missing.")
+        logger.info("Skipping WhatsApp status notify: TELEGRAM_API_TOKEN or TELEGRAM_CHAT_ID missing.")
         return
     try:
         response = requests.get(WHATSAPP_STATUS_URL, timeout=3)
         if response.status_code != 200:
-            print(f"WhatsApp status check failed: {response.status_code}")
+            logger.warning("WhatsApp status check failed: %s", response.status_code)
             send_telegram_api(
                 token=token,
                 chat_id=chat_id,
@@ -92,7 +99,7 @@ def _notify_whatsapp_status():
             return
         data = response.json()
     except Exception as exc:
-        print(f"WhatsApp status check error: {exc}")
+        logger.error("WhatsApp status check error: %s", exc)
         try:
             send_telegram_api(
                 token=token,
@@ -106,7 +113,7 @@ def _notify_whatsapp_status():
         return
 
     if data.get("ready"):
-        print("WhatsApp status: ready.")
+        logger.info("WhatsApp status: ready.")
         return
 
     qr = data.get("qr")
@@ -125,7 +132,7 @@ def _notify_whatsapp_status():
             disable_preview=True,
         )
     except Exception as exc:
-        print(f"Failed to send WhatsApp status to Telegram: {exc}")
+        logger.error("Failed to send WhatsApp status to Telegram: %s", exc)
 
 # Global variables
 graph = None
@@ -145,38 +152,38 @@ whatsapp_process = None
 async def lifespan(app: FastAPI):
     # Load the graph on startup
     global graph, telegram_thread, telegram_stop_event, scheduler_thread, scheduler_stop_event, habit_thread, habit_stop_event, daily_briefing_thread, daily_briefing_stop_event, location_observer_thread, location_observer_stop_event, whatsapp_process
-    print("Initialize Graph...")
+    logger.info("Initializing Graph...")
     graph = create_graph()
     try:
         from integrations.telegram.run_bot import start_polling
         telegram_thread, telegram_stop_event = start_polling(graph=graph)
     except Exception as e:
-        print(f"Telegram bot not started: {e}")
+        logger.error("Telegram bot not started: %s", e)
     try:
         from llm.graph.tools.reminders.scheduler import start_scheduler
         scheduler_thread, scheduler_stop_event = start_scheduler(graph=graph)
     except Exception as e:
-        print(f"Reminder scheduler not started: {e}")
+        logger.error("Reminder scheduler not started: %s", e)
     try:
         habit_thread, habit_stop_event = start_habit_scheduler()
     except Exception as e:
-        print(f"Habit analyzer not started: {e}")
+        logger.error("Habit analyzer not started: %s", e)
     try:
         daily_briefing_thread, daily_briefing_stop_event = start_daily_briefing_scheduler(graph=graph)
     except Exception as e:
-        print(f"Daily briefing scheduler not started: {e}")
+        logger.error("Daily briefing scheduler not started: %s", e)
     try:
         location_observer_thread, location_observer_stop_event = start_location_observer_scheduler(graph=graph)
     except Exception as e:
-        print(f"Location observer scheduler not started: {e}")
+        logger.error("Location observer scheduler not started: %s", e)
     try:
         _start_whatsapp_bot()
     except Exception as e:
-        print(f"WhatsApp bot autostart failed: {e}")
+        logger.error("WhatsApp bot autostart failed: %s", e)
     try:
         _notify_whatsapp_status()
     except Exception as e:
-        print(f"WhatsApp status notify failed: {e}")
+        logger.error("WhatsApp status notify failed: %s", e)
     yield
     # Clean up if necessary
     if telegram_stop_event:
@@ -204,7 +211,7 @@ async def lifespan(app: FastAPI):
             whatsapp_process.terminate()
         except Exception:
             pass
-    print("Shutting down...")
+    logger.info("Shutting down...")
 
 app = FastAPI(lifespan=lifespan, title="Sunday Chat API")
 
@@ -258,7 +265,7 @@ def chat(request: ChatRequest):
 
     config = {"configurable": {"thread_id": request.thread_id}}
     
-    print(f"Processing message for thread {request.thread_id}...")
+    logger.info("💬 [API] thread=%s user=%s platform=%s", request.thread_id, request.username, request.platform)
     location_user_ctx = None
     try:
         if request.user_id:
@@ -270,11 +277,11 @@ def chat(request: ChatRequest):
             (m for m in reversed(result.get("messages", [])) if isinstance(m, AIMessage)),
             None,
         )
-        content = last_ai.content if last_ai and hasattr(last_ai, "content") else ""
+        content = extract_text(last_ai.content) if last_ai and hasattr(last_ai, "content") else ""
         
         return ChatResponse(response=content)
     except Exception as e:
-        print(f"Error processing message: {e}")
+        logger.error("Error processing message: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if location_user_ctx is not None:

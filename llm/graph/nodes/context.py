@@ -1,4 +1,5 @@
 import concurrent.futures
+import logging
 import os
 from langchain_core.messages import HumanMessage
 from llm.graph.states.state import ChatState
@@ -6,6 +7,10 @@ from llm.graph.memory.episodic_memeory import EpisodicMemory
 from llm.graph.memory.semantic_memory import SemanticMemory
 from llm.services.time_manager import TimeManager
 from llm.services.location_service import LocationService
+from llm.graph.habits.action_log import get_recent_actions, get_habit_profile
+from llm.services.neo4j_service import get_people_graph
+
+logger = logging.getLogger(__name__)
 
 # Initialize Services
 try:
@@ -14,7 +19,7 @@ try:
     time_manager = TimeManager()
     location_service = LocationService()
 except Exception as e:
-    print(f"Warning: Could not initialize Services in context node: {e}")
+    logger.warning("Could not initialize Services in context node: %s", e)
     episodic_memory = None
     semantic_memory = None
     time_manager = None
@@ -44,7 +49,7 @@ def retrieve_semantic(query):
             knowledge_strings = [f"- {k['content']} (Confidence: {k['confidence']})" for k in knowledge]
             return "Chinmay background::\n" + "\n".join(knowledge_strings)
     except Exception as e:
-        print(f"Error retrieving semantic knowledge: {e}")
+        logger.error("Error retrieving semantic knowledge: %s", e)
     return ""
 
 def retrieve_episodic(query):
@@ -56,7 +61,7 @@ def retrieve_episodic(query):
             mem_strings = [f"- {m['date']}: {m['content']}" for m in memories]
             return "Recent situation::\n" + "\n".join(mem_strings)
     except Exception as e:
-        print(f"Error retrieving episodic memories: {e}")
+        logger.error("Error retrieving episodic memories: %s", e)
     return ""
 
 def context_gathering_node(state: ChatState):
@@ -90,14 +95,11 @@ def context_gathering_node(state: ChatState):
             time_context = time_manager.get_time_context()
             context_parts.append(f"Current time context (Use naturally, do not explicitly mention unless relevant at the current time event or planned just after few time):\n{time_context}")
         except Exception as e:
-            print(f"Error retrieving time context: {e}")
+            logger.error("Error retrieving time context: %s", e)
 
     # 1.5. Location context (Inject if available and recent, regardless of query keywords)
     if location_service and state.get("user_id"):
         try:
-            # We use a strict max_age (e.g. 2-4 hours) for "implicit" context
-            # to avoid referencing stale locations for general queries.
-            # But here we let the service decide or use the configured default.
             loc = location_service.get_location_context(
                 str(state.get("user_id")),
                 max_age_hours=_location_max_age_hours(),
@@ -105,9 +107,35 @@ def context_gathering_node(state: ChatState):
             if loc:
                 context_parts.append(f"User context:\n{loc}")
         except Exception as e:
-            print(f"Error retrieving location context: {e}")
+            logger.error("Error retrieving location context: %s", e)
     
-    # 2. Parallel Memory Retrieval (reuse module-level pool)
+    # 2. Habit / action context (lightweight DB query)
+    thread_id = state.get("thread_id", "default")
+    try:
+        habit_parts = []
+        profile = get_habit_profile(thread_id)
+        if profile:
+            habit_parts.append(f"Habit profile: {profile}")
+        recent = get_recent_actions(thread_id=thread_id, since_hours=24, limit=5)
+        if recent:
+            action_lines = [f"- {a['action_type']}: {a['description']}" for a in recent]
+            habit_parts.append("Recent actions (24h):\n" + "\n".join(action_lines))
+        if habit_parts:
+            context_parts.append("\n".join(habit_parts))
+    except Exception as e:
+        logger.error("Error retrieving habits context: %s", e)
+
+    # 2.5. People / relationship graph (Neo4j)
+    try:
+        pg = get_people_graph()
+        if pg.available:
+            people_ctx = pg.get_chinmay_circle()
+            if people_ctx:
+                context_parts.append(people_ctx)
+    except Exception as e:
+        logger.error("Error retrieving people graph: %s", e)
+
+    # 3. Parallel Memory Retrieval (reuse module-level pool)
     future_semantic = _executor.submit(retrieve_semantic, query)
     future_episodic = _executor.submit(retrieve_episodic, query)
 
@@ -121,8 +149,7 @@ def context_gathering_node(state: ChatState):
             
     final_context = "\n\n".join(context_parts)
     
-    # Debug print to see what's being injected
     if final_context:
-        print(f"🔍 [Context] Injected:\n{final_context}")
+        logger.info("🔍 [Context] Injected:\n%s", final_context)
         
     return {"memory_context": final_context}

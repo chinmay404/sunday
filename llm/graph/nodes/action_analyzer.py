@@ -1,11 +1,14 @@
+import logging
 import os
 from typing import Optional
 from pydantic import BaseModel, Field
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from llm.graph.states.state import ChatState
-from llm.graph.model.llm import get_llm
+from llm.graph.model.llm import get_cheap_llm
 from llm.graph.habits.action_log import append_action_log, utc_now_iso, touch_last_seen
+
+logger = logging.getLogger(__name__)
 
 
 ACTION_LOG_ENABLE = os.getenv("ACTION_LOG_ENABLE", "true").strip().lower() not in {
@@ -53,9 +56,9 @@ def action_analyzer_node(state: ChatState):
     try:
         touch_last_seen(thread_id)
     except Exception as exc:
-        print(f"Failed to update last_seen: {exc}")
+        logger.error("Failed to update last_seen: %s", exc)
 
-    llm = get_llm(temperature=0.2)
+    llm = get_cheap_llm(temperature=0.2)
     if not llm:
         return {}
 
@@ -76,7 +79,7 @@ def action_analyzer_node(state: ChatState):
             [SystemMessage(content=system_prompt), HumanMessage(content=text)]
         )
     except Exception as exc:
-        print(f"Error in action analyzer: {exc}")
+        logger.error("Error in action analyzer: %s", exc)
         return {}
 
     if not result.has_action or not result.action:
@@ -99,7 +102,8 @@ def action_analyzer_node(state: ChatState):
             thread_id=thread_id,
             user_name=user_name,
         )
+        logger.info("📋 [Action] %s: %s", action.action_type, description)
     except Exception as exc:
-        print(f"Failed to append action log: {exc}")
+        logger.error("Failed to append action log: %s", exc)
 
     return {}

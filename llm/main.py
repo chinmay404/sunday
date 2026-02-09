@@ -1,3 +1,4 @@
+import logging
 import sys
 import os
 from pathlib import Path
@@ -5,6 +6,11 @@ current_dir = Path(__file__).resolve().parent
 root_dir = current_dir.parent
 if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
+
+from llm.logging_config import setup_logging
+setup_logging()  # Must be called before any other imports that log
+
+logger = logging.getLogger(__name__)
 
 from llm.graph.graph import create_graph
 from integrations.telegram.run_bot import start_polling
@@ -21,8 +27,7 @@ def main():
     habit_thread, habit_stop_event = start_habit_scheduler()
     daily_briefing_thread, daily_briefing_stop_event = start_daily_briefing_scheduler(graph=graph)
     location_observer_thread, location_observer_stop_event = start_location_observer_scheduler(graph=graph)
-    print(graph)
-    print("Sunday Agent Initialized. Type 'quit' to exit.")
+    logger.info("Sunday Agent Initialized. Type 'quit' to exit.")
     chat_history = []
     
     while True:
@@ -40,7 +45,7 @@ def main():
             "platform": "cli",
         }
         
-        print("Sunday is thinking...")
+        logger.debug("Processing user input...")
         config = {"configurable": {"thread_id": "default"}}
         # Invoke with config so the checkpointer loads/saves this thread
         result = graph.invoke(initial_state, config=config)

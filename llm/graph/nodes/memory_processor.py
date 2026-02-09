@@ -1,13 +1,17 @@
 import json
+import logging
 import os
 import concurrent.futures
 from typing import Optional, List
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from llm.graph.states.state import ChatState
 from llm.graph.memory.episodic_memeory import EpisodicMemory
 from llm.graph.memory.semantic_memory import SemanticMemory
-from llm.graph.model.llm import get_llm
+from llm.graph.model.llm import get_cheap_llm
+from llm.graph.nodes.helpers import extract_text
+
+logger = logging.getLogger(__name__)
 
 SUMMARY_TAG = "[Conversation Summary]"
 
@@ -21,7 +25,7 @@ try:
     episodic_memory = EpisodicMemory()
     semantic_memory = SemanticMemory()
 except Exception as e:
-    print(f"Warning: Could not initialize Memories in processor: {e}")
+    logger.warning("Could not initialize Memories in processor: %s", e)
     episodic_memory = None
     semantic_memory = None
 
@@ -34,11 +38,16 @@ class EntityRelation(BaseModel):
     confidence: float = Field(description="0.0 to 1.0")
 
 class MemoryDecision(BaseModel):
-    decision: str = Field(description="SEMANTIC, EPISODIC, BOTH, or SKIP")
-    reason: str = Field(description="Reasoning")
+    decision: str = Field(default="SKIP", description="SEMANTIC, EPISODIC, BOTH, or SKIP")
+    reason: str = Field(default="", description="Reasoning")
     
-    # New Graph Structure
-    new_relationships: List[EntityRelation] = Field(default_factory=list, description="List of new entity relationships to store.")
+    # New Graph Structure — accept null from LLM and coerce to []
+    new_relationships: Optional[List[EntityRelation]] = Field(default_factory=list, description="List of new entity relationships to store.")
+
+    @field_validator("new_relationships", mode="before")
+    @classmethod
+    def _coerce_null_relationships(cls, v):
+        return v if v is not None else []
 
     # Episodic
     episodic_content: Optional[str] = Field(default=None, description="Event summary")
@@ -71,24 +80,25 @@ def memory_processing_node(state: ChatState):
             window = recent_human_ai[-SUMMARY_WINDOW_TURNS:]
             window_text = "\n".join(
                 [
-                    ("User: " + m.content) if isinstance(m, HumanMessage) else ("Sunday: " + m.content)
+                    ("User: " + extract_text(m.content)) if isinstance(m, HumanMessage) else ("Sunday: " + extract_text(m.content))
                     for m in window
                 ]
             )
-            llm = get_llm()
+            llm = get_cheap_llm()
             if llm:
                 try:
                     prompt = (
                         "Summarize the recent conversation concisely. Capture intents, decisions, and follow-ups. "
                         "Keep it short and actionable."
                     )
-                    summary_text = llm.invoke([
+                    summary_text = extract_text(llm.invoke([
                         SystemMessage(content=prompt),
                         HumanMessage(content=window_text)
-                    ]).content
+                    ]).content)
                     summary_msg = SystemMessage(content=f"{SUMMARY_TAG} {summary_text}")
+                    logger.info("📝 [Summary] Generated conversation summary")
                 except Exception as e:
-                    print(f"Error generating summary: {e}")
+                    logger.error("Error generating summary: %s", e)
 
     last_human = None
     last_ai = None
@@ -98,7 +108,7 @@ def memory_processing_node(state: ChatState):
     
     if not last_human or not last_ai: return {}
 
-    interaction_text = f"User: {last_human.content}\nSunday: {last_ai.content}"
+    interaction_text = f"User: {extract_text(last_human.content)}\nSunday: {extract_text(last_ai.content)}"
     
     # Retrieve existing knowledge to prevent duplicates
     existing_context = ""
@@ -109,31 +119,37 @@ def memory_processing_node(state: ChatState):
                 fact_strings = [f"- {f['content']}" for f in existing_facts]
                 existing_context = "\n".join(fact_strings)
         except Exception as e:
-            print(f"Error retrieving existing facts: {e}")
+            logger.error("Error retrieving existing facts: %s", e)
 
-    system_prompt = f"""
-    You are the Memory Manager. Extract Entities and Relationships.
-    
-    EXISTING KNOWLEDGE (Do not re-save these unless updated):
-    {existing_context}
-    
-    1. SEMANTIC (Entity-Graph):
-       - "I work at Climate KIC in Amsterdam"
-       -> (User, person) works_at (Climate KIC, org)
-       -> (Climate KIC, org) located_in (Amsterdam, location)
-       
-    2. EPISODIC (Events):
-       - "Meeting tomorrow" -> Expire 1 day.
-    """
+    system_prompt = f"""You are the Memory Manager. Decide what to store from this interaction.
 
-    llm = get_llm() 
+EXISTING KNOWLEDGE (skip if already known):
+{existing_context}
+
+Rules:
+- SEMANTIC: Extract entity relationships ("User works_at Climate KIC")
+- EPISODIC: Store time-bound events/plans with importance 0-1
+- SKIP: If nothing worth remembering (greetings, small talk)
+
+You MUST return JSON with ALL these fields:
+{{
+  "decision": "SEMANTIC" | "EPISODIC" | "BOTH" | "SKIP",
+  "reason": "why this decision",
+  "new_relationships": [{{"from_entity": "", "from_type": "person|org|location|project|concept|tool", "relation": "", "to_entity": "", "to_type": "", "confidence": 0.9}}],
+  "episodic_content": "event summary or null",
+  "episodic_importance": 0.5,
+  "episodic_tags": ["tag"],
+  "episodic_expiry_days": null
+}}"""
+
+    llm = get_cheap_llm() 
     if not llm: return {}
         
-    structured_llm = llm.with_structured_output(MemoryDecision)
+    structured_llm = llm.with_structured_output(MemoryDecision, method="json_mode")
     
     try:
         result = structured_llm.invoke([
-            SystemMessage(content=system_prompt),
+            SystemMessage(content=system_prompt + "\n\nRespond with valid JSON matching the MemoryDecision schema."),
             HumanMessage(content=f"Analyze:\n{interaction_text}")
         ])
         
@@ -141,7 +157,7 @@ def memory_processing_node(state: ChatState):
             # Store Semantic Graph
             if (result.decision in ["SEMANTIC", "BOTH"]) and result.new_relationships and semantic_memory:
                 for rel in result.new_relationships:
-                    print(f"🧠 [Graph] Linking: {rel.from_entity} --{rel.relation}--> {rel.to_entity}")
+                    logger.info("🧠 [Graph] %s --%s--> %s", rel.from_entity, rel.relation, rel.to_entity)
                     executor.submit(
                         semantic_memory.add_relationship,
                         rel.from_entity, rel.from_type,
@@ -153,7 +169,7 @@ def memory_processing_node(state: ChatState):
             # Store Episodic
             if (result.decision in ["EPISODIC", "BOTH"]) and result.episodic_content and episodic_memory:
                 expiry_msg = f"(Expires {result.episodic_expiry_days}d)" if result.episodic_expiry_days else "(Permanent)"
-                print(f"📖 [Episodic] Storing: {result.episodic_content} {expiry_msg}")
+                logger.info("📖 [Episodic] %s %s", result.episodic_content, expiry_msg)
                 executor.submit(
                     episodic_memory.add_memory,
                     result.episodic_content,
@@ -163,8 +179,9 @@ def memory_processing_node(state: ChatState):
                     result.episodic_expiry_days
                 )
             
+        logger.info("💾 [Memory] decision=%s reason=%s", result.decision, result.reason)
     except Exception as e:
-        print(f"Error in memory processing: {e}")
+        logger.error("Error in memory processing: %s", e)
 
     # Return summary message (if created) to be stored in conversation history via LangGraph state.
     if summary_msg:

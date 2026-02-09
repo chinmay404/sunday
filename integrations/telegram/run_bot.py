@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import logging
 import time
 import os
 import sys
@@ -13,10 +14,13 @@ repo_root = current_dir.parents[1]
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
+logger = logging.getLogger(__name__)
+
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, AIMessage
 from llm.graph.tools.reminders.weakup_tools import set_current_chat_id, reset_current_chat_id
 from llm.graph.nodes.map_user import map_user
+from llm.graph.nodes.helpers import extract_text
 from llm.services.location_service import (
     LocationService,
     set_current_location_user_id,
@@ -85,7 +89,7 @@ def get_updates(token, offset=None, timeout=2):
         response = requests.get(url, params=params, timeout=40)
         return response.json()
     except Exception as e:
-        print(f"Error fetching updates: {e}")
+        logger.error("Error fetching updates: %s", e)
         return None
 
 def process_message(token, graph, message_data):
@@ -100,7 +104,7 @@ def process_message(token, graph, message_data):
         lat = loc.get("latitude")
         lng = loc.get("longitude")
         if lat is not None and lng is not None:
-            print(f"Location update from {username} ({chat_id}): {lat}, {lng}")
+            logger.info("📍 [Telegram] Location from %s: %s, %s", username, lat, lng)
             location_service.update_location(
                 user_id=str(user_id),
                 latitude=lat,
@@ -117,11 +121,12 @@ def process_message(token, graph, message_data):
     if not text:
         return
 
-    print(f"Received message from {username} ({chat_id}): {text}")
-
     token_ctx = None
     location_user_ctx = None
     mapped_user_name = map_user(str(user_id))
+    display_name = mapped_user_name if mapped_user_name not in ("Unknown", "User Not in List Ask for Further Information") else username
+
+    logger.info("📩 [Telegram] From %s (%s): %s", display_name, chat_id, text[:120])
 
     # Show typing indicator immediately so user knows we're processing
     _send_typing(token, chat_id)
@@ -145,14 +150,15 @@ def process_message(token, graph, message_data):
         messages = result.get("messages", [])
         last_ai = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
         if last_ai and last_ai.content:
-            # Split long messages to respect Telegram's 4096-char limit
-            for chunk in _split_message(last_ai.content):
-                send_message(token, chat_id, chunk, None, False)
-            print(f"Sent response to {username}: {last_ai.content[:120]}...")
+            text_out = extract_text(last_ai.content)
+            if text_out:
+                # Split long messages to respect Telegram's 4096-char limit
+                for chunk in _split_message(text_out):
+                    send_message(token, chat_id, chunk, None, False)
+                logger.info("📤 [Telegram] To %s: %s", display_name, text_out[:120])
             
     except Exception as e:
-        error_msg = f"Error processing message: {e}"
-        print(error_msg)
+        logger.error("Error processing message from %s: %s", display_name, e, exc_info=True)
         try:
             send_message(token, chat_id, "Something broke on my end. Give me a sec and try again.", None, False)
         except Exception:
@@ -177,25 +183,25 @@ def _should_enable_bot() -> bool:
 def run_polling(graph=None, token: Optional[str] = None, stop_event: Optional[threading.Event] = None):
     load_env()
     if not _should_enable_bot():
-        print("Telegram bot disabled via TELEGRAM_BOT_ENABLE.")
+        logger.info("Telegram bot disabled via TELEGRAM_BOT_ENABLE.")
         return
 
     token = token or os.getenv("TELEGRAM_API_TOKEN")
     if not token:
-        print("Error: TELEGRAM_API_TOKEN not found.")
+        logger.error("TELEGRAM_API_TOKEN not found.")
         return
 
     if graph is None:
-        print("Initializing Graph with PostgresSaver...")
+        logger.info("Initializing Graph with PostgresSaver...")
         graph = create_graph()
 
-    print("Telegram Bot Started. Polling for updates...")
+    logger.info("Telegram Bot Started. Polling for updates...")
 
     offset = None
     
     while True:
         if stop_event and stop_event.is_set():
-            print("Telegram bot stopping...")
+            logger.info("Telegram bot stopping...")
             break
 
         updates = get_updates(token, offset)
