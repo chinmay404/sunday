@@ -23,7 +23,7 @@ class EpisodicMemory:
             self.db_config = db_config
 
         self.embeddings = get_embeddings()
-        self.vector_dim = 768 
+        self.vector_dim = 3072 
         
         self._initialize_db()
 
@@ -62,11 +62,12 @@ class EpisodicMemory:
             # Ensure expires_at column exists
             cur.execute("ALTER TABLE episodic_memory ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;")
             
-            # Create an HNSW index for faster similarity search
-            cur.execute("""
-                CREATE INDEX IF NOT EXISTS episodic_memory_embedding_idx 
-                ON episodic_memory USING hnsw (embedding vector_cosine_ops);
-            """)
+            # HNSW index caps at 2000 dims — skip if embedding is larger
+            if self.vector_dim <= 2000:
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS episodic_memory_embedding_idx 
+                    ON episodic_memory USING hnsw (embedding vector_cosine_ops);
+                """)
             
         finally:
             cur.close()

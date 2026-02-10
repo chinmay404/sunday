@@ -110,8 +110,9 @@ def agent_node(state: ChatState):
     logger.info("🤖 [Agent] speaker=%s platform=%s msgs=%d tools=%d", current_speaker, platform, len(rebuilt), len(ALL_TOOLS))
     for i, msg in enumerate(rebuilt):
         tag = type(msg).__name__
-        preview = (msg.content or "")[:200].replace("\n", " ")
-        logger.debug("  [%d] %s: %s%s", i, tag, preview, "…" if len(msg.content or "") > 200 else "")
+        raw = extract_text(msg.content)
+        preview = raw[:200].replace("\n", " ")
+        logger.debug("  [%d] %s: %s%s", i, tag, preview, "…" if len(raw) > 200 else "")
 
     response = llm_with_tools.invoke(rebuilt)
     logger.info("🤖 [Agent] Response: %s", extract_text(response.content)[:150])

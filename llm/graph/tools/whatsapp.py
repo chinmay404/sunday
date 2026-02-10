@@ -102,7 +102,8 @@ def whatsapp_get_settings():
 
 @tool
 def whatsapp_set_busy_mode(enabled: Optional[bool] = None, auto_send: Optional[bool] = None, reply_template: Optional[str] = None):
-    """Toggle busy mode, set auto-send or approval mode, and customize reply template."""
+    """Get or toggle WhatsApp busy mode settings. Call with no args to just read current settings.
+    Toggle busy mode, set auto-send or approval mode, and customize reply template."""
     settings = _load_settings()
     if enabled is not None:
         settings["busyMode"] = bool(enabled)
@@ -110,8 +111,12 @@ def whatsapp_set_busy_mode(enabled: Optional[bool] = None, auto_send: Optional[b
         settings["autoSend"] = bool(auto_send)
     if reply_template:
         settings["busyReplyTemplate"] = reply_template.strip()
-    _save_settings(settings)
-    return whatsapp_get_settings()
+    if enabled is not None or auto_send is not None or reply_template:
+        _save_settings(settings)
+    busy = "on" if settings.get("busyMode") else "off"
+    mode = "auto-send" if settings.get("autoSend") else "approval"
+    template = settings.get("busyReplyTemplate", "")
+    return f"WhatsApp busy mode: {busy}. Reply mode: {mode}. Template: {template}"
 
 @tool
 def whatsapp_list_pending(limit: int = 10):

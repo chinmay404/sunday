@@ -20,7 +20,7 @@ class SemanticMemory:
             self.db_config = db_config
 
         self.embeddings = get_embeddings()
-        self.vector_dim = 768 
+        self.vector_dim = 3072 
         self._initialize_db()
 
     def _get_connection(self):
@@ -46,11 +46,12 @@ class SemanticMemory:
                     last_updated TIMESTAMPTZ DEFAULT NOW()
                 );
             """)
-            # Index for entity resolution (finding "Climate KIC" from "my office")
-            cur.execute("""
-                CREATE INDEX IF NOT EXISTS entities_embedding_idx 
-                ON entities USING hnsw (embedding vector_cosine_ops);
-            """)
+            # Index for entity resolution — HNSW caps at 2000 dims, skip if higher
+            if self.vector_dim <= 2000:
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS entities_embedding_idx 
+                    ON entities USING hnsw (embedding vector_cosine_ops);
+                """)
             
             # 2. Relationships Table
             cur.execute("""
