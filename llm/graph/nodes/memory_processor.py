@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 from llm.graph.states.state import ChatState
 from llm.graph.memory.episodic_memeory import EpisodicMemory
 from llm.graph.memory.semantic_memory import SemanticMemory
-from llm.graph.model.llm import get_cheap_llm
+from llm.graph.model.llm import get_cheap_llm, truncate_text, CHEAP_LLM_MAX_INPUT_CHARS
 from llm.graph.nodes.helpers import extract_text
 from llm.services.neo4j_service import get_people_graph
 
@@ -20,6 +20,9 @@ SUMMARY_ENABLE = os.getenv("SUMMARY_ENABLE", "true").strip().lower() not in {"0"
 SUMMARY_EVERY_TURNS = int(os.getenv("SUMMARY_EVERY_TURNS", "10"))
 SUMMARY_CHAR_LIMIT = int(os.getenv("SUMMARY_CHAR_LIMIT", "4000"))
 SUMMARY_WINDOW_TURNS = int(os.getenv("SUMMARY_WINDOW_TURNS", "10"))
+
+# Reusable thread pool for background memory writes (avoid creating per-call)
+_memory_executor = concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="memory")
 
 # Initialize Memories
 try:
@@ -118,6 +121,8 @@ def memory_processing_node(state: ChatState):
                     for m in window
                 ]
             )
+            # Truncate to stay within cheap LLM token limits
+            window_text = truncate_text(window_text, CHEAP_LLM_MAX_INPUT_CHARS)
             llm = get_cheap_llm()
             if llm:
                 try:
@@ -143,6 +148,8 @@ def memory_processing_node(state: ChatState):
     if not last_human or not last_ai: return {}
 
     interaction_text = f"User: {extract_text(last_human.content)}\nSunday: {extract_text(last_ai.content)}"
+    # Truncate to stay within cheap LLM limits
+    interaction_text = truncate_text(interaction_text, CHEAP_LLM_MAX_INPUT_CHARS // 2)
     
     # Retrieve existing knowledge to prevent duplicates
     existing_context = ""
@@ -151,7 +158,7 @@ def memory_processing_node(state: ChatState):
             existing_facts = semantic_memory.retrieve_relevant_knowledge(interaction_text, k=5)
             if existing_facts:
                 fact_strings = [f"- {f['content']}" for f in existing_facts]
-                existing_context = "\n".join(fact_strings)
+                existing_context = truncate_text("\n".join(fact_strings), 1500)
         except Exception as e:
             logger.error("Error retrieving existing facts: %s", e)
 
@@ -243,7 +250,8 @@ You MUST return JSON with ALL these fields:
             HumanMessage(content=f"Analyze this interaction and extract ALL knowledge:\n{interaction_text}")
         ])
         
-        with concurrent.futures.ThreadPoolExecutor() as executor:
+        executor = _memory_executor
+        try:
             # ── 1. Store People in Neo4j Graph (ALWAYS, regardless of decision) ──
             if result.people:
                 pg = get_people_graph()
@@ -314,6 +322,8 @@ You MUST return JSON with ALL these fields:
                     result.episodic_tags or [],
                     result.episodic_expiry_days
                 )
+        except Exception as pool_exc:
+            logger.error("Error submitting memory writes: %s", pool_exc)
             
         logger.info("💾 [Memory] decision=%s reason=%s people=%d prefs=%d rels=%d", 
                    result.decision, result.reason,

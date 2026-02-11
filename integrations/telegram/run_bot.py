@@ -89,8 +89,8 @@ def get_updates(token, offset=None, timeout=2):
         response = requests.get(url, params=params, timeout=40)
         return response.json()
     except Exception as e:
-        logger.error("Error fetching updates: %s", e)
-        return None
+        # Return a dict with error info so the caller can do backoff
+        return {"_error": True, "_exception": e}
 
 def process_message(token, graph, message_data):
     chat_id = message_data["chat"]["id"]
@@ -198,6 +198,8 @@ def run_polling(graph=None, token: Optional[str] = None, stop_event: Optional[th
     logger.info("Telegram Bot Started. Polling for updates...")
 
     offset = None
+    consecutive_errors = 0
+    MAX_BACKOFF = 120  # 2 minutes max between retries
     
     while True:
         if stop_event and stop_event.is_set():
@@ -206,7 +208,20 @@ def run_polling(graph=None, token: Optional[str] = None, stop_event: Optional[th
 
         updates = get_updates(token, offset)
         
+        # Handle connection errors with exponential backoff
+        if updates is None or (isinstance(updates, dict) and updates.get("_error")):
+            consecutive_errors += 1
+            backoff = min(2 ** consecutive_errors, MAX_BACKOFF)
+            exc = updates.get("_exception", "unknown") if isinstance(updates, dict) else "null response"
+            # Only log every few failures to avoid spam (log 1st, 5th, then every 10th)
+            if consecutive_errors <= 1 or consecutive_errors == 5 or consecutive_errors % 10 == 0:
+                logger.error("Error fetching updates (x%d, backoff %ds): %s",
+                             consecutive_errors, backoff, str(exc)[:150])
+            time.sleep(backoff)
+            continue
+        
         if updates and updates.get("ok"):
+            consecutive_errors = 0  # Reset on success
             for update in updates["result"]:
                 update_id = update["update_id"]
                 offset = update_id + 1

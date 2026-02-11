@@ -12,6 +12,9 @@ Env vars: NEO4J_URI, NEO4J_USER, NEO4J_PASS
 
 import logging
 import os
+import time
+import threading
+from functools import wraps
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -27,26 +30,89 @@ except ImportError:
 
 
 class PeopleGraph:
-    """Thin wrapper around Neo4j for managing people & relationships."""
+    """Thin wrapper around Neo4j for managing people & relationships.
+    
+    Features:
+      - Auto-reconnect on connection failures (ConnectionResetError, etc.)
+      - Retry with backoff for transient errors
+      - Thread-safe reconnection via lock
+    """
+
+    _MAX_RETRIES = 2
+    _RECONNECT_LOCK = threading.Lock()
 
     def __init__(self):
         self._driver = None
+        self._uri = None
+        self._auth = None
         if GraphDatabase is None:
             return
-        uri = os.getenv("NEO4J_URI")
+        self._uri = os.getenv("NEO4J_URI")
         user = os.getenv("NEO4J_USER", "neo4j")
         password = os.getenv("NEO4J_PASS")
-        if not uri or not password:
+        if not self._uri or not password:
             logger.warning("NEO4J_URI / NEO4J_PASS not set — PeopleGraph disabled")
             return
+        self._auth = (user, password)
+        self._connect()
+
+    def _connect(self):
+        """Establish (or re-establish) Neo4j connection."""
         try:
-            self._driver = GraphDatabase.driver(uri, auth=(user, password))
+            if self._driver:
+                try:
+                    self._driver.close()
+                except Exception:
+                    pass
+            self._driver = GraphDatabase.driver(self._uri, auth=self._auth)
             self._driver.verify_connectivity()
             self._ensure_constraints()
-            logger.info("Neo4j PeopleGraph connected (%s)", uri)
+            logger.info("Neo4j PeopleGraph connected (%s)", self._uri)
         except Exception as exc:
             logger.error("Neo4j connection failed: %s", exc)
             self._driver = None
+
+    def _reconnect(self):
+        """Thread-safe reconnection."""
+        with self._RECONNECT_LOCK:
+            # Double-check: another thread might have reconnected already
+            try:
+                if self._driver:
+                    self._driver.verify_connectivity()
+                    return  # already reconnected
+            except Exception:
+                pass
+            logger.info("Neo4j reconnecting...")
+            self._connect()
+
+    def _run_with_retry(self, operation_name: str, fn, *args, **kwargs):
+        """Execute a Neo4j operation with auto-reconnect on transient failures."""
+        last_exc = None
+        for attempt in range(self._MAX_RETRIES + 1):
+            try:
+                return fn(*args, **kwargs)
+            except Exception as exc:
+                last_exc = exc
+                err_msg = str(exc).lower()
+                is_transient = any(s in err_msg for s in (
+                    "connection reset", "defunct", "broken pipe", "connection refused",
+                    "session expired", "not connected", "failed to read",
+                    "service unavailable", "connection closed",
+                ))
+                if not is_transient:
+                    logger.error("%s failed: %s", operation_name, exc)
+                    return None
+                if attempt < self._MAX_RETRIES:
+                    wait = 2 ** attempt
+                    logger.warning("%s transient error (attempt %d/%d), reconnecting in %ds: %s",
+                                   operation_name, attempt + 1, self._MAX_RETRIES + 1, wait,
+                                   str(exc)[:120])
+                    time.sleep(wait)
+                    self._reconnect()
+                else:
+                    logger.error("%s failed after %d retries: %s",
+                                 operation_name, self._MAX_RETRIES + 1, exc)
+        return None
 
     @property
     def available(self) -> bool:
@@ -100,7 +166,7 @@ class PeopleGraph:
             r.updated_at = datetime()
         RETURN p.name AS person
         """
-        try:
+        def _do():
             with self._driver.session() as s:
                 result = s.run(
                     cypher,
@@ -111,9 +177,8 @@ class PeopleGraph:
                 )
                 record = result.single()
                 return f"Saved: {record['person']} ({relation_to_chinmay})"
-        except Exception as exc:
-            logger.error("add_person failed: %s", exc)
-            return f"Failed to save person: {exc}"
+        result = self._run_with_retry("add_person", _do)
+        return result if result else f"Failed to save person: {name}"
 
     def add_relation(
         self,
@@ -134,7 +199,7 @@ class PeopleGraph:
             r.updated_at = datetime()
         RETURN a.name AS from_name, b.name AS to_name
         """
-        try:
+        def _do():
             with self._driver.session() as s:
                 s.run(
                     cypher,
@@ -144,9 +209,8 @@ class PeopleGraph:
                     notes=notes.strip(),
                 )
                 return f"Saved: {from_person} --{relation}--> {to_person}"
-        except Exception as exc:
-            logger.error("add_relation failed: %s", exc)
-            return f"Failed: {exc}"
+        result = self._run_with_retry("add_relation", _do)
+        return result if result else f"Failed to save relation: {from_person} -> {to_person}"
 
     def update_person_attributes(
         self,
@@ -179,15 +243,14 @@ class PeopleGraph:
         SET {set_clause}, p.updated_at = datetime()
         RETURN p.name AS person
         """
-        try:
+        def _do():
             with self._driver.session() as s:
                 result = s.run(cypher, **params)
                 record = result.single()
                 attr_str = ", ".join(f"{k}={v}" for k, v in attributes.items())
                 return f"Updated {record['person']}: {attr_str}"
-        except Exception as exc:
-            logger.error("update_person_attributes failed: %s", exc)
-            return f"Failed: {exc}"
+        result = self._run_with_retry("update_person_attributes", _do)
+        return result if result else f"Failed to update attributes for: {name}"
 
     def add_preference(
         self,
@@ -218,7 +281,7 @@ class PeopleGraph:
             r.updated_at = datetime()
         RETURN pref.key AS pref_key
         """
-        try:
+        def _do():
             with self._driver.session() as s:
                 result = s.run(
                     cypher,
@@ -229,9 +292,8 @@ class PeopleGraph:
                 )
                 record = result.single()
                 return f"Preference saved: {record['pref_key']} = {value} ({sentiment})"
-        except Exception as exc:
-            logger.error("add_preference failed: %s", exc)
-            return f"Failed: {exc}"
+        result = self._run_with_retry("add_preference", _do)
+        return result if result else f"Failed to save preference: {key}"
 
     def get_all_preferences(self) -> str:
         """Get all of Chinmay's stored preferences."""
@@ -243,7 +305,7 @@ class PeopleGraph:
                pref.category AS category, r.sentiment AS sentiment
         ORDER BY pref.category, pref.key
         """
-        try:
+        def _do():
             with self._driver.session() as s:
                 records = list(s.run(cypher))
                 if not records:
@@ -257,9 +319,8 @@ class PeopleGraph:
                         f"- {sentiment_icon} [{rec['category']}] {rec['key']}: {rec['value']}"
                     )
                 return "Chinmay's preferences:\n" + "\n".join(lines)
-        except Exception as exc:
-            logger.error("get_all_preferences failed: %s", exc)
-            return ""
+        result = self._run_with_retry("get_all_preferences", _do)
+        return result if result is not None else ""
 
     # ── Read ───────────────────────────────────────────────────────────────
 
@@ -278,7 +339,7 @@ class PeopleGraph:
                    direction: CASE WHEN startNode(r) = p THEN 'outgoing' ELSE 'incoming' END
                }) AS relations
         """
-        try:
+        def _do():
             with self._driver.session() as s:
                 record = s.run(cypher, name=name.strip()).single()
                 if not record:
@@ -292,9 +353,8 @@ class PeopleGraph:
                             f"  {direction} {rel['relation']} {rel['other']}{note}"
                         )
                 return "\n".join(lines)
-        except Exception as exc:
-            logger.error("get_person failed: %s", exc)
-            return f"Error: {exc}"
+        result = self._run_with_retry("get_person", _do)
+        return result if result else f"Error fetching person: {name}"
 
     def get_chinmay_circle(self) -> str:
         """Get all people related to Chinmay + preferences — used for context injection."""
@@ -317,7 +377,7 @@ class PeopleGraph:
                pref.category AS category, r.sentiment AS sentiment
         ORDER BY pref.category, pref.key
         """
-        try:
+        def _do():
             with self._driver.session() as s:
                 # People
                 records = list(s.run(cypher_people))
@@ -344,9 +404,8 @@ class PeopleGraph:
                     parts.append("Chinmay's preferences:\n" + "\n".join(pref_lines))
                 
                 return "\n\n".join(parts) if parts else ""
-        except Exception as exc:
-            logger.error("get_chinmay_circle failed: %s", exc)
-            return ""
+        result = self._run_with_retry("get_chinmay_circle", _do)
+        return result if result else ""
 
 
 # ── Module-level singleton ─────────────────────────────────────────────────
