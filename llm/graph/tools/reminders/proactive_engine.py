@@ -1,25 +1,25 @@
 """
-Proactive Check-in Engine — makes Sunday feel like a real person.
+Proactive Engine — makes Sunday feel like a real person.
 
 Uses EXISTING data only (no new API calls):
   - Calendar events from TimeManager (already cached)
   - last_seen tracking from action_log
-  - Pending reminders from DB
   - Action logs / habit data
 
-Triggers (all auto-invoke the graph, send via Telegram):
-  1. Pre-event nudge: 20-30 min before a calendar event
-  2. Evening wrap-up: ~21:00 if there was morning activity
-  3. Silence check-in: if Chinmay hasn't talked in 6+ hours during daytime
-  4. Post-commitment follow-up: if a commitment was logged hours ago with no update
+Triggers are pattern-based, not clock-based:
+  1. Upcoming event awareness — notices events and decides whether to mention them
+  2. Silence awareness — notices long gaps and decides whether to check in
+  3. Commitment awareness — notices unfollowed commitments
+  4. End-of-day awareness — if there was activity, maybe wrap up
 
-All checks are cheap DB/memory reads — only ONE LLM call happens when
-we actually decide to send a message (via graph.invoke).
+The engine provides context to the LLM and lets IT decide what to say.
+No rigid timings — just situation awareness.
 """
 
 import json
 import logging
 import os
+import random
 import sys
 import threading
 import time
@@ -48,11 +48,11 @@ except Exception:
 
 # ── Config ─────────────────────────────────────────────────────────────────
 
-DEFAULT_POLL_INTERVAL = 120  # check every 2 minutes
-SILENCE_THRESHOLD_HOURS = float(os.getenv("PROACTIVE_SILENCE_HOURS", "6"))
-EVENING_HOUR = int(os.getenv("PROACTIVE_EVENING_HOUR", "21"))
-PRE_EVENT_MINUTES = int(os.getenv("PROACTIVE_PRE_EVENT_MINUTES", "25"))
-COMMITMENT_FOLLOWUP_HOURS = float(os.getenv("PROACTIVE_COMMITMENT_HOURS", "4"))
+DEFAULT_POLL_INTERVAL = 180  # check every 3 minutes
+# Soft thresholds — hints, not hard rules
+SILENCE_MIN_HOURS = float(os.getenv("PROACTIVE_SILENCE_HOURS", "5"))
+EVENT_LOOKAHEAD_MINUTES = int(os.getenv("PROACTIVE_EVENT_LOOKAHEAD", "40"))
+COMMITMENT_MIN_HOURS = float(os.getenv("PROACTIVE_COMMITMENT_HOURS", "3"))
 
 
 def _should_enable() -> bool:
@@ -109,164 +109,99 @@ def _claim_trigger(chat_id: str, trigger_key: str, trigger_date) -> bool:
         conn.close()
 
 
-# ── Trigger checks (all cheap — DB/memory only) ──────────────────────────
-
-def _get_upcoming_events(time_manager, tzinfo, within_minutes: int = 35) -> List[dict]:
-    """Get calendar events happening in the next N minutes. Uses cached TimeManager."""
-    if not time_manager:
-        return []
+def _count_today_sends(chat_id: str, today) -> int:
+    """How many proactive messages have we sent today? Used to avoid spamming."""
+    conn = get_connection()
     try:
-        raw = time_manager.get_time_context()
-        data = json.loads(raw) if isinstance(raw, str) else raw
-        if not isinstance(data, dict):
-            return []
-        events = data.get("calendar_events", [])
-        now = datetime.now(tzinfo)
-        upcoming = []
-        for ev in events:
-            start_raw = (ev or {}).get("start")
-            summary = (ev or {}).get("summary", "Untitled")
-            if not start_raw:
-                continue
-            try:
-                cleaned = start_raw.replace("Z", "+00:00")
-                start_dt = datetime.fromisoformat(cleaned)
-                if start_dt.tzinfo is None:
-                    start_dt = start_dt.replace(tzinfo=tzinfo)
-                start_local = start_dt.astimezone(tzinfo)
-                diff = (start_local - now).total_seconds() / 60
-                if 0 < diff <= within_minutes:
-                    upcoming.append({
-                        "summary": summary,
-                        "start_local": start_local,
-                        "minutes_until": int(diff),
-                    })
-            except Exception:
-                continue
-        return upcoming
-    except Exception as exc:
-        logger.debug("Proactive engine: calendar check failed: %s", exc)
-        return []
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM proactive_sends WHERE chat_id = %s AND trigger_date = %s",
+                    (str(chat_id), today),
+                )
+                return cur.fetchone()[0]
+    except Exception:
+        return 0
+    finally:
+        conn.close()
 
 
-def _check_silence(chat_id: str, tzinfo) -> Optional[str]:
-    """Check if Chinmay has been silent for too long during daytime hours."""
+# ── Situation awareness (all cheap — DB/memory only) ─────────────────────
+
+def _gather_situation(chat_id: str, tzinfo, time_manager) -> dict:
+    """
+    Gather all available context about what's going on right now.
+    Returns a situation dict — the main loop decides what (if anything) to act on.
+    """
     now = datetime.now(tzinfo)
-    hour = now.hour
-    
-    # Only check during waking hours (8am - 11pm)
-    if hour < 8 or hour >= 23:
-        return None
+    situation = {
+        "now": now,
+        "hour": now.hour,
+        "is_waking_hours": 8 <= now.hour < 23,
+        "is_evening": 20 <= now.hour < 23,
+        "upcoming_events": [],
+        "silence_hours": None,
+        "last_seen_time": None,
+        "open_commitments": [],
+        "recent_actions": [],
+        "had_activity_today": False,
+    }
 
+    # ── Last seen ──
     last_seen = get_last_seen_time(chat_id)
-    if not last_seen:
-        return None
+    if last_seen:
+        if last_seen.tzinfo is None:
+            from datetime import timezone
+            last_seen = last_seen.replace(tzinfo=timezone.utc)
+        last_local = last_seen.astimezone(tzinfo)
+        situation["last_seen_time"] = last_local
+        situation["silence_hours"] = (now - last_local).total_seconds() / 3600
+        situation["had_activity_today"] = last_local.date() == now.date()
 
-    if last_seen.tzinfo is None:
-        from datetime import timezone
-        last_seen = last_seen.replace(tzinfo=timezone.utc)
-    
-    last_seen_local = last_seen.astimezone(tzinfo)
-    silence_hours = (now - last_seen_local).total_seconds() / 3600
+    # ── Recent actions ──
+    actions = get_recent_actions(thread_id=chat_id, since_hours=12, limit=15)
+    if actions:
+        situation["recent_actions"] = actions
+        if not situation["had_activity_today"]:
+            situation["had_activity_today"] = True
 
-    if silence_hours >= SILENCE_THRESHOLD_HOURS:
-        # Check it's not just overnight silence
-        if last_seen_local.date() == now.date() or (
-            last_seen_local.date() == (now - timedelta(days=1)).date() and last_seen_local.hour >= 20
-        ):
-            return (
-                f"Chinmay hasn't said anything in about {int(silence_hours)} hours. "
-                f"Last active around {last_seen_local.strftime('%H:%M')}. "
-                f"It's now {now.strftime('%H:%M')}. "
-                "Check in naturally — don't mention tracking silence. "
-                "Reference whatever was last discussed or what's on his schedule."
-            )
-    return None
+        # Find open commitments
+        situation["open_commitments"] = [
+            a for a in actions
+            if a.get("commitment_made")
+            and str(a.get("status", "")).strip().lower() not in ("done", "completed", "cancelled")
+        ]
 
+    # ── Upcoming calendar events ──
+    if time_manager:
+        try:
+            raw = time_manager.get_time_context()
+            data = json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(data, dict):
+                for ev in data.get("calendar_events", []):
+                    start_raw = (ev or {}).get("start")
+                    summary = (ev or {}).get("summary", "Untitled")
+                    if not start_raw:
+                        continue
+                    try:
+                        cleaned = start_raw.replace("Z", "+00:00")
+                        start_dt = datetime.fromisoformat(cleaned)
+                        if start_dt.tzinfo is None:
+                            start_dt = start_dt.replace(tzinfo=tzinfo)
+                        start_local = start_dt.astimezone(tzinfo)
+                        diff_min = (start_local - now).total_seconds() / 60
+                        if 0 < diff_min <= EVENT_LOOKAHEAD_MINUTES:
+                            situation["upcoming_events"].append({
+                                "summary": summary,
+                                "start_local": start_local,
+                                "minutes_until": int(diff_min),
+                            })
+                    except Exception:
+                        continue
+        except Exception as exc:
+            logger.debug("Proactive: calendar check failed: %s", exc)
 
-def _check_unfollowed_commitments(chat_id: str, tzinfo) -> Optional[str]:
-    """Check if there are recent commitments with no follow-up."""
-    now = datetime.now(tzinfo)
-    hour = now.hour
-    if hour < 9 or hour >= 22:
-        return None
-
-    actions = get_recent_actions(
-        thread_id=chat_id,
-        since_hours=COMMITMENT_FOLLOWUP_HOURS * 2,
-        limit=20,
-    )
-    if not actions:
-        return None
-
-    commitments = [
-        a for a in actions
-        if a.get("commitment_made")
-        and str(a.get("status", "")).strip().lower() not in ("done", "completed", "cancelled")
-    ]
-    if not commitments:
-        return None
-
-    # Check if there's been any activity AFTER the commitment
-    latest_commitment_ts = None
-    for c in commitments:
-        ts_str = c.get("timestamp")
-        if ts_str:
-            try:
-                cleaned = ts_str if isinstance(ts_str, str) else str(ts_str)
-                if cleaned.endswith("Z"):
-                    cleaned = cleaned[:-1] + "+00:00"
-                ct = datetime.fromisoformat(cleaned)
-                if ct.tzinfo is None:
-                    from datetime import timezone as tz
-                    ct = ct.replace(tzinfo=tz.utc)
-                if latest_commitment_ts is None or ct > latest_commitment_ts:
-                    latest_commitment_ts = ct
-            except Exception:
-                continue
-
-    if latest_commitment_ts:
-        hours_since = (datetime.now(tzinfo) - latest_commitment_ts.astimezone(tzinfo)).total_seconds() / 3600
-        if hours_since >= COMMITMENT_FOLLOWUP_HOURS:
-            descriptions = [c.get("description", "something") for c in commitments[:2]]
-            return (
-                f"Chinmay committed to: {', '.join(descriptions)} "
-                f"about {int(hours_since)} hours ago but hasn't followed up. "
-                "Ask how it went naturally — don't sound like a tracker."
-            )
-    return None
-
-
-def _should_evening_wrapup(chat_id: str, tzinfo) -> Optional[str]:
-    """Check if it's time for an evening wrap-up."""
-    now = datetime.now(tzinfo)
-    if now.hour != EVENING_HOUR:
-        return None
-
-    # Only wrap up if there was meaningful activity today
-    actions_today = get_recent_actions(thread_id=chat_id, since_hours=14, limit=10)
-    last_seen = get_last_seen_time(chat_id)
-
-    had_activity = bool(actions_today) or (
-        last_seen and last_seen.astimezone(tzinfo).date() == now.date()
-    )
-
-    if not had_activity:
-        return None
-
-    action_summary = ""
-    if actions_today:
-        items = [f"- {a['action_type']}: {a['description']}" for a in actions_today[:5]]
-        action_summary = "\nToday's logged actions:\n" + "\n".join(items)
-
-    return (
-        "It's evening. Time for a casual end-of-day check-in with Chinmay. "
-        "Don't be formal — just a quick 'how'd today go' vibe. "
-        "Reference what you know about his day. "
-        "If he had events or commitments, ask about them. "
-        "If he seems to have had a quiet day, acknowledge that. "
-        f"Keep it to 2-3 sentences max.{action_summary}"
-    )
+    return situation
 
 
 # ── Graph invocation ──────────────────────────────────────────────────────
@@ -305,9 +240,11 @@ def _invoke_and_send(graph, chat_id: str, trigger_message: str, platform: str = 
             config={"configurable": {"thread_id": str(chat_id)}},
         )
         ai_text = _extract_last_ai_text(result)
-        if ai_text:
+        if ai_text and ai_text.strip().lower() != "skip":
             send_message(token, str(chat_id), ai_text, None, False)
-            logger.info("🔔 [Proactive] Sent %s to %s: %s", platform, chat_id, ai_text[:100])
+            logger.info("🔔 [Proactive] Sent %s: %s", platform, ai_text[:120])
+        elif ai_text:
+            logger.info("🔕 [Proactive] LLM chose to skip %s", platform)
     except Exception as exc:
         logger.error("Proactive engine invoke failed (%s): %s", platform, exc)
     finally:
@@ -319,6 +256,8 @@ def _invoke_and_send(graph, chat_id: str, trigger_message: str, platform: str = 
 
 
 # ── Main scheduler loop ───────────────────────────────────────────────────
+
+MAX_DAILY_PROACTIVE = int(os.getenv("PROACTIVE_MAX_DAILY", "4"))
 
 def run_proactive_engine(
     poll_interval: int = DEFAULT_POLL_INTERVAL,
@@ -342,7 +281,6 @@ def run_proactive_engine(
 
     tzinfo = _get_timezone()
 
-    # TimeManager for calendar checks (reuses cached data, no extra API calls)
     time_manager = None
     try:
         from llm.services.time_manager import TimeManager
@@ -356,54 +294,130 @@ def run_proactive_engine(
         from llm.graph.graph import create_graph
         graph = create_graph()
 
-    logger.info("🧠 Proactive engine started (poll every %ds)", poll_interval)
+    logger.info("🧠 Proactive engine started (poll ~%ds)", poll_interval)
 
     while True:
         if stop_event and stop_event.is_set():
             logger.info("Proactive engine stopping...")
             break
 
-        now = datetime.now(tzinfo)
-        today = now.date()
+        today = datetime.now(tzinfo).date()
 
         try:
-            # ── 1. Pre-event nudges ──────────────────────────────────
-            upcoming = _get_upcoming_events(time_manager, tzinfo, within_minutes=PRE_EVENT_MINUTES)
-            for ev in upcoming:
-                trigger_key = f"pre_event_{ev['summary'][:50]}"
+            # Don't spam — cap daily proactive messages
+            sent_today = _count_today_sends(chat_id, today)
+            if sent_today >= MAX_DAILY_PROACTIVE:
+                time.sleep(poll_interval)
+                continue
+
+            situation = _gather_situation(chat_id, tzinfo, time_manager)
+            now = situation["now"]
+
+            # Skip outside waking hours
+            if not situation["is_waking_hours"]:
+                time.sleep(poll_interval)
+                continue
+
+            # ── 1. Upcoming event awareness ─────────────────────────
+            for ev in situation["upcoming_events"]:
+                trigger_key = f"event_{ev['summary'][:50]}"
                 if _claim_trigger(chat_id, trigger_key, today):
+                    context_bits = [
+                        f"'{ev['summary']}' is coming up in about {ev['minutes_until']} minutes.",
+                    ]
+                    if situation["recent_actions"]:
+                        recent = situation["recent_actions"][:3]
+                        context_bits.append(
+                            "Recent context: " + "; ".join(a.get("description", "") for a in recent)
+                        )
                     msg = (
-                        f"Calendar event '{ev['summary']}' starts in {ev['minutes_until']} minutes. "
-                        "Give Chinmay a heads-up. Be brief and natural — "
-                        "like a friend reminding him. If you know context about this event, reference it."
+                        "You noticed Chinmay has something coming up. "
+                        + " ".join(context_bits) + " "
+                        "Decide if this is worth mentioning. If yes, be natural — "
+                        "a quick heads-up, maybe a joke, maybe 'you ready?'. "
+                        "If it's trivial, just respond with 'skip'."
                     )
                     _invoke_and_send(graph, chat_id, msg, platform="proactive_event")
-                    time.sleep(2)  # small gap between sends
+                    time.sleep(3)
 
-            # ── 2. Silence check-in ──────────────────────────────────
-            silence_msg = _check_silence(chat_id, tzinfo)
-            if silence_msg:
-                # Only one silence check per 6-hour window
-                window_key = f"silence_{now.hour // 6}"
+            # ── 2. Silence awareness ────────────────────────────────
+            if (
+                situation["silence_hours"] is not None
+                and situation["silence_hours"] >= SILENCE_MIN_HOURS
+                and situation["had_activity_today"]
+            ):
+                window_key = f"silence_{now.hour // 4}"
                 if _claim_trigger(chat_id, window_key, today):
-                    _invoke_and_send(graph, chat_id, silence_msg, platform="proactive_checkin")
+                    last_t = situation["last_seen_time"]
+                    recent_context = ""
+                    if situation["recent_actions"]:
+                        items = [a.get("description", "") for a in situation["recent_actions"][:3]]
+                        recent_context = f" Last things going on: {'; '.join(items)}."
+                    msg = (
+                        f"Chinmay's been quiet for about {int(situation['silence_hours'])} hours "
+                        f"(last active ~{last_t.strftime('%H:%M') if last_t else 'earlier'}).{recent_context} "
+                        "Decide whether to reach out. "
+                        "Could be a quick 'hey', a tease, a question about something, "
+                        "or just vibes. Don't be clinical. "
+                        "If it doesn't make sense, respond with 'skip'."
+                    )
+                    _invoke_and_send(graph, chat_id, msg, platform="proactive_checkin")
 
-            # ── 3. Commitment follow-up ──────────────────────────────
-            commit_msg = _check_unfollowed_commitments(chat_id, tzinfo)
-            if commit_msg:
-                if _claim_trigger(chat_id, "commitment_followup", today):
-                    _invoke_and_send(graph, chat_id, commit_msg, platform="proactive_followup")
+            # ── 3. Commitment follow-up ─────────────────────────────
+            if situation["open_commitments"]:
+                oldest_commitment = None
+                for c in situation["open_commitments"]:
+                    ts_str = c.get("timestamp")
+                    if ts_str:
+                        try:
+                            cleaned = ts_str if isinstance(ts_str, str) else str(ts_str)
+                            if cleaned.endswith("Z"):
+                                cleaned = cleaned[:-1] + "+00:00"
+                            ct = datetime.fromisoformat(cleaned)
+                            if ct.tzinfo is None:
+                                from datetime import timezone as tz
+                                ct = ct.replace(tzinfo=tz.utc)
+                            hours_ago = (now - ct.astimezone(tzinfo)).total_seconds() / 3600
+                            if hours_ago >= COMMITMENT_MIN_HOURS:
+                                if oldest_commitment is None or hours_ago > oldest_commitment[1]:
+                                    oldest_commitment = (c, hours_ago)
+                        except Exception:
+                            continue
 
-            # ── 4. Evening wrap-up ───────────────────────────────────
-            evening_msg = _should_evening_wrapup(chat_id, tzinfo)
-            if evening_msg:
-                if _claim_trigger(chat_id, "evening_wrapup", today):
-                    _invoke_and_send(graph, chat_id, evening_msg, platform="proactive_evening")
+                if oldest_commitment:
+                    c, hours_ago = oldest_commitment
+                    desc = c.get("description", "something")
+                    if _claim_trigger(chat_id, f"commit_{desc[:40]}", today):
+                        msg = (
+                            f"Chinmay said he'd do: '{desc}' about {int(hours_ago)} hours ago. "
+                            "No follow-up yet. Decide whether to nudge. "
+                            "If yes, be natural — light nudge or a tease. "
+                            "If it's not worth it, respond with 'skip'."
+                        )
+                        _invoke_and_send(graph, chat_id, msg, platform="proactive_followup")
+
+            # ── 4. Evening awareness ────────────────────────────────
+            if situation["is_evening"] and situation["had_activity_today"]:
+                if _claim_trigger(chat_id, "evening", today):
+                    action_bits = ""
+                    if situation["recent_actions"]:
+                        items = [f"{a['action_type']}: {a['description']}" for a in situation["recent_actions"][:5]]
+                        action_bits = " Today's context: " + "; ".join(items)
+                    msg = (
+                        f"It's {now.strftime('%H:%M')}, evening. Chinmay was active today.{action_bits} "
+                        "Decide whether to do a casual end-of-day thing. "
+                        "Could be asking how his day went, referencing something specific, "
+                        "or just dropping a vibe. Keep it light. "
+                        "If it doesn't feel right, respond with 'skip'."
+                    )
+                    _invoke_and_send(graph, chat_id, msg, platform="proactive_evening")
 
         except Exception as exc:
             logger.error("Proactive engine cycle error: %s", exc)
 
-        time.sleep(max(30, poll_interval))
+        # Randomize interval so it doesn't feel mechanical
+        jitter = random.randint(-30, 30)
+        time.sleep(max(60, poll_interval + jitter))
 
 
 def start_proactive_engine(
