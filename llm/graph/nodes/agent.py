@@ -62,6 +62,81 @@ def agent_node(state: ChatState):
     human_ai = [m for m in messages if isinstance(m, (HumanMessage, AIMessage, ToolMessage))]
     window = human_ai[-15:]
 
+    # ── Sanitize message window ──────────────────────────────────────
+    # Fix issues that crash both Gemini and Groq:
+    # 1. ToolMessages with null/empty content → replace with "(no output)"
+    # 2. AIMessage with tool_calls but missing ToolMessage responses → strip tool_calls
+    # 3. Orphaned ToolMessages (no matching AIMessage tool_call) → remove
+    # 4. Window must start with HumanMessage (Gemini requirement)
+    sanitized: list = []
+    for msg in window:
+        if isinstance(msg, ToolMessage):
+            # Fix empty content — LLMs require non-empty string
+            content = msg.content
+            if content is None or (isinstance(content, str) and not content.strip()):
+                msg = ToolMessage(
+                    content="(no output)",
+                    tool_call_id=getattr(msg, "tool_call_id", ""),
+                    name=getattr(msg, "name", ""),
+                )
+            elif isinstance(content, list):
+                # Some tools return list content — stringify it
+                msg = ToolMessage(
+                    content=str(content) if content else "(no output)",
+                    tool_call_id=getattr(msg, "tool_call_id", ""),
+                    name=getattr(msg, "name", ""),
+                )
+        sanitized.append(msg)
+
+    # Ensure every AI tool_call has a matching ToolMessage response
+    final_window: list = []
+    i = 0
+    while i < len(sanitized):
+        msg = sanitized[i]
+        if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+            expected_ids = {tc["id"] for tc in msg.tool_calls if "id" in tc}
+            # Collect following ToolMessages
+            j = i + 1
+            found_ids = set()
+            while j < len(sanitized) and isinstance(sanitized[j], ToolMessage):
+                tid = getattr(sanitized[j], "tool_call_id", "")
+                found_ids.add(tid)
+                j += 1
+            if expected_ids and not found_ids:
+                # No tool responses at all → strip tool_calls, keep text content only
+                text = extract_text(getattr(msg, "content", ""))
+                if text.strip():
+                    final_window.append(AIMessage(content=text))
+                # Skip this AI message entirely if no text content
+                i = j
+                continue
+            # Keep the AI message and its tool responses
+            final_window.append(msg)
+            for k in range(i + 1, j):
+                final_window.append(sanitized[k])
+            i = j
+            continue
+        elif isinstance(msg, ToolMessage):
+            # Orphaned ToolMessage — check if previous message has matching tool_call
+            if final_window and isinstance(final_window[-1], AIMessage):
+                tc_ids = {tc["id"] for tc in getattr(final_window[-1], "tool_calls", []) if "id" in tc}
+                if getattr(msg, "tool_call_id", "") in tc_ids:
+                    final_window.append(msg)
+                    i += 1
+                    continue
+            # No matching AI message → skip orphan
+            i += 1
+            continue
+        else:
+            final_window.append(msg)
+        i += 1
+
+    # Ensure window starts with HumanMessage (Gemini requires user turn first)
+    while final_window and not isinstance(final_window[0], HumanMessage):
+        final_window.pop(0)
+
+    window = final_window
+
     # Determine current speaker from state (set by Telegram/API layer)
     current_speaker = state.get("user_name") or ""
     if not current_speaker or current_speaker == "User Not in List Ask for Further Information":
