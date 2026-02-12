@@ -13,6 +13,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from llm.graph.db import get_connection
 from llm.graph.habits.action_log import get_recent_actions
+from llm.graph.nodes.helpers import extract_text
 from llm.services.time_manager import TimeManager
 from llm.graph.tools.reminders.weakup_tools import set_current_chat_id, reset_current_chat_id
 
@@ -363,10 +364,7 @@ def _extract_last_ai_text(result: dict) -> str:
     last_ai = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
     if not last_ai:
         return ""
-    content = getattr(last_ai, "content", "")
-    if isinstance(content, list):
-        return "\n".join(str(part) for part in content if part is not None).strip()
-    return str(content).strip()
+    return extract_text(getattr(last_ai, "content", ""))
 
 
 def _render_with_agent(graph, chat_id: str, raw_briefing: str) -> str:
@@ -418,21 +416,13 @@ def init_daily_briefing_db() -> None:
         conn.close()
 
 
-def _already_sent(chat_id: str, run_date) -> bool:
-    conn = get_connection()
-    try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT 1 FROM daily_briefing_runs WHERE chat_id=%s AND run_date=%s LIMIT 1",
-                    (str(chat_id), run_date),
-                )
-                return cur.fetchone() is not None
-    finally:
-        conn.close()
+def _claim_briefing_slot(chat_id: str, run_date) -> bool:
+    """Atomically check-and-mark a briefing as claimed.
 
-
-def _mark_sent(chat_id: str, run_date) -> None:
+    Returns True if this caller won the slot (no prior row existed).
+    Uses INSERT ... ON CONFLICT DO NOTHING to avoid race conditions
+    when multiple processes check at the same time.
+    """
     conn = get_connection()
     try:
         with conn:
@@ -441,10 +431,13 @@ def _mark_sent(chat_id: str, run_date) -> None:
                     """
                     INSERT INTO daily_briefing_runs (chat_id, run_date, sent_at)
                     VALUES (%s, %s, NOW())
-                    ON CONFLICT (chat_id, run_date) DO UPDATE SET sent_at = EXCLUDED.sent_at
+                    ON CONFLICT (chat_id, run_date) DO NOTHING
                     """,
                     (str(chat_id), run_date),
                 )
+                # rowcount == 1 means we inserted (won the slot)
+                # rowcount == 0 means row already existed (another process got it)
+                return cur.rowcount == 1
     finally:
         conn.close()
 
@@ -503,7 +496,7 @@ def run_daily_briefing_scheduler(
             now_local.hour == send_hour and now_local.minute >= send_minute
         )
 
-        if is_due and not _already_sent(str(chat_id), run_date):
+        if is_due and _claim_briefing_slot(str(chat_id), run_date):
             try:
                 raw_brief = _build_raw_briefing(str(chat_id), time_manager, tzinfo, city)
                 outgoing = raw_brief
@@ -512,7 +505,6 @@ def run_daily_briefing_scheduler(
                     if ai_text:
                         outgoing = ai_text
                 send_message(token, str(chat_id), outgoing, None, False)
-                _mark_sent(str(chat_id), run_date)
                 print(f"Daily briefing sent for {run_date} to chat {chat_id}.")
             except Exception as exc:
                 print(f"Failed to send daily briefing: {exc}")

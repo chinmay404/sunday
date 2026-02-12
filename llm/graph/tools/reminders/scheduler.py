@@ -9,6 +9,7 @@ from typing import Optional, Tuple
 from langchain_core.messages import HumanMessage, AIMessage
 from dotenv import load_dotenv
 from llm.graph.db import get_connection
+from llm.graph.nodes.helpers import extract_text
 
 try:
     from .weakup_tools import (
@@ -60,10 +61,7 @@ def _extract_last_ai_text(result: dict) -> str:
     last_ai = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
     if not last_ai:
         return ""
-    content = getattr(last_ai, "content", "")
-    if isinstance(content, list):
-        return "\n".join(str(part) for part in content if part is not None).strip()
-    return str(content).strip()
+    return extract_text(getattr(last_ai, "content", ""))
 
 
 def run_scheduler(
@@ -102,11 +100,18 @@ def run_scheduler(
         try:
             with conn:
                 with conn.cursor() as cur:
+                    # Atomically claim due reminders by flipping status to 'processing'
+                    # This prevents another process from picking the same ones.
                     cur.execute(
                         """
-                        SELECT id, time, message, note, chat_id FROM reminders
-                        WHERE status='scheduled' AND time <= %s
-                        ORDER BY time ASC
+                        UPDATE reminders SET status='processing'
+                        WHERE id IN (
+                            SELECT id FROM reminders
+                            WHERE status='scheduled' AND time <= %s
+                            ORDER BY time ASC
+                            FOR UPDATE SKIP LOCKED
+                        )
+                        RETURNING id, time, message, note, chat_id
                         """,
                         (now,),
                     )
@@ -142,6 +147,14 @@ def run_scheduler(
                             )
                         except Exception as exc:
                             print(f"Error sending reminder {reminder_id}: {exc}")
+                            # Revert to scheduled so it can be retried
+                            try:
+                                cur.execute(
+                                    "UPDATE reminders SET status='scheduled' WHERE id=%s",
+                                    (reminder_id,),
+                                )
+                            except Exception:
+                                pass
                         finally:
                             if token_ctx is not None:
                                 try:
