@@ -1,0 +1,21 @@
+name: weekly_review
+description: "Comprehensive weekly review — reflect on the week, review goals and threads, plan ahead."
+trigger_hint: "weekly review, week recap, what happened this week, sunday review"
+
+steps:
+  - "Use search_memory to recall key conversations and events from the past 7 days"
+  - "Use list_threads to check all open threads — identify which are resolved, stale, or need attention"
+  - "Use list_goals to review active goals and their step progress"
+  - "Identify wins (things that went well), misses (dropped balls), and patterns (recurring themes)"
+  - "Suggest which threads to close (use resolve_thread), which goals to adjust, and what to focus on next week"
+  - "Ask Chinmay if he wants to update any goals, close threads, or shift priorities"
+
+tools_hint:
+  - search_memory
+  - list_threads
+  - resolve_thread
+  - list_goals
+  - update_goal
+
+output_format: "Conversational, not a report. Use bullet points for lists. Be honest about misses. Hype the wins."
+notes: "This is a conversation, not a presentation. Push back if things are slipping. Celebrate if things are cooking. Don't sugarcoat."

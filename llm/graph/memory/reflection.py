@@ -112,6 +112,8 @@ def _gather_day_data(chat_id: str, tzinfo) -> Dict[str, Any]:
         "people_circle": "",
         "calendar_tomorrow": [],
         "memory_stats": {},
+        "thread_summary": "",
+        "goal_summary": "",
     }
 
     # Actions — today (24h) and week (7d)
@@ -180,6 +182,18 @@ def _gather_day_data(chat_id: str, tzinfo) -> Dict[str, Any]:
         pg = get_people_graph()
         if pg.available:
             data["people_circle"] = pg.get_chinmay_circle() or ""
+    except Exception:
+        pass
+
+    # Open threads & goals
+    try:
+        from llm.graph.memory.threads import get_thread_summary
+        data["thread_summary"] = get_thread_summary()
+    except Exception:
+        pass
+    try:
+        from llm.graph.memory.goals import get_goal_summary
+        data["goal_summary"] = get_goal_summary()
     except Exception:
         pass
 
@@ -276,6 +290,12 @@ def _format_day_data(data: Dict[str, Any]) -> str:
     if data.get("people_circle"):
         parts.append(f"## People in Chinmay's Life\n  {data['people_circle']}")
 
+    # Threads & Goals
+    if data.get("thread_summary"):
+        parts.append(f"## Open Threads & Commitments\n{data['thread_summary']}")
+    if data.get("goal_summary"):
+        parts.append(f"## Active Goals & Plans\n{data['goal_summary']}")
+
     # Tomorrow's calendar + tasks
     cal = data.get("calendar_tomorrow", [])
     if cal:
@@ -315,10 +335,17 @@ Your world model is your private understanding of his life. Update it. What chan
 ### 5. PLAN TOMORROW AWARENESS
 Look at tomorrow's calendar and tasks. What should you be aware of? Not to nag — to be naturally relevant. What might he need? What might he forget?
 
-### 6. THINK FREELY
+### 6. MANAGE THREADS & GOALS
+Review open threads (commitments, worries, follow-ups, waiting-on items) and active goals.
+- Which threads are stale and should be nudged about?
+- Which threads are probably resolved and can be closed?
+- Are goals on track? Any steps blocked? Any goals that should be paused or abandoned?
+- Any NEW threads or goals you should create based on what you learned today?
+
+### 7. THINK FREELY
 Form opinions. Have private thoughts. React emotionally. Worry about something. Get excited about something. Be a mind, not a checklist.
 
-### 7. GENERATE PROACTIVE IMPULSES
+### 8. GENERATE PROACTIVE IMPULSES
 Based on everything, should you reach out tomorrow? About what? When might feel right? This isn't a schedule — it's an instinct. Maybe you want to tease him about something. Maybe you're worried. Maybe you want to celebrate something.
 
 ## OUTPUT FORMAT (JSON):
@@ -352,6 +379,12 @@ Based on everything, should you reach out tomorrow? About what? When might feel 
   "day_digest": "2-3 sentence summary of the day from your perspective",
   "pattern_noticed": "a pattern you see, or null",
   "unresolved_threads": ["things that feel unfinished"],
+  "thread_actions": [
+    {"action": "create|resolve|bump", "title": "thread title", "type": "commitment|worry|follow_up|waiting_on|idea", "context": "why"}
+  ],
+  "goal_actions": [
+    {"action": "create|complete|pause|abandon|add_step", "title": "goal or step text", "goal_id": null, "context": "why"}
+  ],
   "opinion": "something you genuinely think/feel right now — be honest, be opinionated"
 }
 ```
@@ -483,7 +516,73 @@ def run_reflection(chat_id: str, tzinfo=None) -> Optional[Dict]:
     if opinion:
         set_state("current_opinion", opinion, source="night_reflection", ttl_hours=48.0)
 
-    # 8. Inner thoughts → store as stream of consciousness
+    # 8. Thread actions (create/resolve threads from reflection)
+    thread_actions = parsed.get("thread_actions", [])
+    if thread_actions:
+        try:
+            from llm.graph.memory.threads import create_thread, resolve_thread, update_thread
+            for ta in thread_actions:
+                if not isinstance(ta, dict):
+                    continue
+                action = ta.get("action", "")
+                if action == "create":
+                    create_thread(
+                        title=ta.get("title", "Untitled"),
+                        thread_type=ta.get("type", "follow_up"),
+                        context=ta.get("context", ""),
+                        source="night_reflection",
+                    )
+                elif action == "resolve" and ta.get("title"):
+                    # Find by title prefix match
+                    from llm.graph.memory.threads import list_threads
+                    for t in list_threads("open"):
+                        if ta["title"].lower() in t["title"].lower():
+                            resolve_thread(t["id"], ta.get("context", "Resolved during reflection"))
+                            break
+                elif action == "bump" and ta.get("title"):
+                    from llm.graph.memory.threads import list_threads
+                    for t in list_threads("open"):
+                        if ta["title"].lower() in t["title"].lower():
+                            update_thread(t["id"], context=ta.get("context", ""))
+                            break
+            logger.info("🌙 [Reflection] Processed %d thread actions", len(thread_actions))
+        except Exception as exc:
+            logger.error("🌙 [Reflection] Thread actions failed: %s", exc)
+
+    # 9. Goal actions (create/update goals from reflection)
+    goal_actions = parsed.get("goal_actions", [])
+    if goal_actions:
+        try:
+            from llm.graph.memory.goals import create_goal, update_goal, add_step, list_goals
+            for ga in goal_actions:
+                if not isinstance(ga, dict):
+                    continue
+                action = ga.get("action", "")
+                if action == "create":
+                    create_goal(
+                        title=ga.get("title", "Untitled"),
+                        description=ga.get("context", ""),
+                        source="night_reflection",
+                    )
+                elif action in ("complete", "pause", "abandon"):
+                    status_map = {"complete": "completed", "pause": "paused", "abandon": "abandoned"}
+                    gid = ga.get("goal_id")
+                    if not gid and ga.get("title"):
+                        for g in list_goals("active"):
+                            if ga["title"].lower() in g["title"].lower():
+                                gid = g["id"]
+                                break
+                    if gid:
+                        update_goal(gid, status=status_map.get(action, action))
+                elif action == "add_step":
+                    gid = ga.get("goal_id")
+                    if gid and ga.get("title"):
+                        add_step(gid, ga["title"])
+            logger.info("🌙 [Reflection] Processed %d goal actions", len(goal_actions))
+        except Exception as exc:
+            logger.error("🌙 [Reflection] Goal actions failed: %s", exc)
+
+    # 10. Inner thoughts → store as stream of consciousness
     thoughts = parsed.get("inner_thoughts", [])
     for t in thoughts:
         if isinstance(t, dict):

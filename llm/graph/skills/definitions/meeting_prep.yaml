@@ -1,0 +1,22 @@
+name: meeting_prep
+description: "Prepare for an upcoming meeting — gather context, talking points, and open items related to attendees or topic."
+trigger_hint: "meeting prep, prepare for meeting, what should I bring up, get ready for call"
+
+steps:
+  - "Ask which meeting or infer from calendar context"
+  - "Use search_memory for any previous conversations about this person/topic/project"
+  - "Use get_person_info if meeting is with a known person — check relationship, last interactions"
+  - "Use list_threads to find any open threads related to this meeting's topic or attendees"
+  - "Use list_goals to check if any active goals are relevant to the meeting"
+  - "Compile: key context, talking points, open questions, things to follow up on"
+  - "After the meeting, suggest creating threads for any new action items using create_thread"
+
+tools_hint:
+  - search_memory
+  - get_person_info
+  - list_threads
+  - list_goals
+  - create_thread
+
+output_format: "Quick bullet list. Context first, then talking points, then questions to ask. No fluff."
+notes: "Be practical. Don't generate generic talking points — use what you actually know from memory. If you don't know much about the person/topic, say so."

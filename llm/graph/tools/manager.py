@@ -39,6 +39,9 @@ from .people_tools import (
     save_preference,
     get_person_info,
 )
+from .thread_tools import create_thread, resolve_thread, list_threads, bump_thread
+from .goal_tools import create_goal, goal_add_step, goal_update_step, update_goal, list_goals
+from .skill_tools import list_skills, run_skill
 
 
 def get_all_tools():
@@ -71,6 +74,15 @@ def get_all_tools():
 
     # People & preferences
     tools.extend([add_person_relation, update_person_details, save_preference, get_person_info])
+
+    # Threads & commitments (executive function)
+    tools.extend([create_thread, resolve_thread, list_threads, bump_thread])
+
+    # Goals & plans (directional intelligence)
+    tools.extend([create_goal, goal_add_step, goal_update_step, update_goal, list_goals])
+
+    # Skills (YAML-driven routines)
+    tools.extend([list_skills, run_skill])
 
     return tools
 

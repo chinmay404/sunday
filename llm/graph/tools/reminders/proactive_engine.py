@@ -224,6 +224,19 @@ def _gather_situation(chat_id: str, tzinfo, time_manager) -> dict:
     except Exception as exc:
         logger.debug("Proactive: world model read failed: %s", exc)
 
+    # ── Tracked threads & goals (executive function) ──
+    try:
+        from llm.graph.memory.threads import get_stale_threads, get_overdue_threads
+        situation["stale_threads"] = get_stale_threads(stale_days=3)
+        situation["overdue_threads"] = get_overdue_threads()
+    except Exception as exc:
+        logger.debug("Proactive: thread read failed: %s", exc)
+    try:
+        from llm.graph.memory.goals import get_next_actions
+        situation["blocked_or_next_actions"] = get_next_actions()
+    except Exception as exc:
+        logger.debug("Proactive: goal read failed: %s", exc)
+
     return situation
 
 
@@ -481,6 +494,25 @@ def run_proactive_engine(
                     _invoke_and_send(graph, chat_id, msg, platform="proactive_impulse")
                     time.sleep(3)
                     break  # max 1 impulse per cycle
+
+            # ── 6. Stale thread / overdue nudge ─────────────────────
+            stale = situation.get("stale_threads", [])
+            overdue = situation.get("overdue_threads", [])
+            nudge_items = overdue + stale  # overdue first (more urgent)
+            if nudge_items:
+                item = nudge_items[0]
+                trigger_key = f"thread_nudge_{item['id']}"
+                if _claim_trigger(chat_id, trigger_key, today):
+                    is_overdue = item in overdue
+                    urgency = "overdue" if is_overdue else f"{item.get('days_stale', '?')} days stale"
+                    msg = (
+                        f"You're tracking a thread: '{item['title']}' ({item['type']}). "
+                        f"It's {urgency}. Context: {item.get('context', 'none')}. "
+                        "Decide whether to nudge Chinmay about it. "
+                        "Could be a gentle reminder, a direct question, or closing it if it's irrelevant. "
+                        "If it's not worth bringing up, respond with 'skip'."
+                    )
+                    _invoke_and_send(graph, chat_id, msg, platform="proactive_thread")
 
         except Exception as exc:
             logger.error("Proactive engine cycle error: %s", exc)

@@ -156,6 +156,22 @@ def context_gathering_node(state: ChatState):
     except Exception as e:
         logger.error("Error loading world model: %s", e)
 
+    # 5. Open threads & active goals (executive function)
+    try:
+        from llm.graph.memory.threads import get_thread_summary
+        thread_ctx = get_thread_summary()
+        if thread_ctx and thread_ctx != "No open threads.":
+            context_parts.append(f"YOUR TRACKED THREADS:\n{thread_ctx}")
+    except Exception as e:
+        logger.error("Error loading threads: %s", e)
+    try:
+        from llm.graph.memory.goals import get_goal_summary
+        goal_ctx = get_goal_summary()
+        if goal_ctx and goal_ctx != "No active goals.":
+            context_parts.append(f"YOUR TRACKED GOALS:\n{goal_ctx}")
+    except Exception as e:
+        logger.error("Error loading goals: %s", e)
+
     final_context = "\n\n".join(context_parts)
     
     if final_context:

@@ -35,6 +35,8 @@ from llm.graph.tools.reminders.location_observer import start_location_observer_
 from llm.graph.tools.reminders.proactive_engine import start_proactive_engine
 from llm.graph.memory.reflection import start_reflection_engine
 from llm.graph.memory.world_model import init_world_model
+from llm.graph.memory.threads import init_threads
+from llm.graph.memory.goals import init_goals
 from llm.services.location_service import set_current_location_user_id, reset_current_location_user_id
 from integrations.telegram.send_telegram import send_message as send_telegram_api
 
@@ -161,11 +163,13 @@ async def lifespan(app: FastAPI):
     global graph, telegram_thread, telegram_stop_event, scheduler_thread, scheduler_stop_event, habit_thread, habit_stop_event, daily_briefing_thread, daily_briefing_stop_event, location_observer_thread, location_observer_stop_event, proactive_thread, proactive_stop_event, reflection_thread, reflection_stop_event, whatsapp_process
     logger.info("Initializing Graph...")
     graph = create_graph()
-    # Initialize world model tables
+    # Initialize world model + executive function tables
     try:
         init_world_model()
+        init_threads()
+        init_goals()
     except Exception as e:
-        logger.error("World model init failed: %s", e)
+        logger.error("World model/threads/goals init failed: %s", e)
     try:
         from integrations.telegram.run_bot import start_polling
         telegram_thread, telegram_stop_event = start_polling(graph=graph)

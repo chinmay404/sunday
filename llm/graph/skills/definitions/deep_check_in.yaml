@@ -1,0 +1,20 @@
+name: deep_check_in
+description: "A thorough personal check-in — how are things really going across life, work, health, relationships."
+trigger_hint: "check in on me, how am I doing, life review, deep check in, how's everything going, real talk"
+
+steps:
+  - "Use search_memory to recall recent conversations, emotional states, and patterns from the past 2 weeks"
+  - "Use list_goals to see what's active and how progress is going — are things moving or stalling?"
+  - "Use list_threads to see what's unresolved — especially worries and waiting-on items that might be weighing on him"
+  - "Reflect on patterns: energy levels, mood trends, what's been avoided, what's been prioritized, sleep/health mentions"
+  - "Be honest — call out if something is being avoided or if energy has been consistently low"
+  - "Acknowledge what's going well too — not everything needs to be a problem"
+  - "Ask one meaningful question that goes deeper than surface level — something that makes him actually think"
+
+tools_hint:
+  - search_memory
+  - list_goals
+  - list_threads
+
+output_format: "Warm but honest. Like a real friend checking in over a late night conversation. Mix genuine concern with light teasing if appropriate."
+notes: "This is the opposite of surface-level. Go deep. But don't be heavy-handed. Read the room — if he's not in the mood, don't force it."

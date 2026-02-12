@@ -1,0 +1,23 @@
+name: brain_dump
+description: "Process a messy brain dump into organized threads, goals, and actions. Turn chaos into structure."
+trigger_hint: "brain dump, dump everything, let me think out loud, just need to get this out, unload"
+
+steps:
+  - "Let Chinmay dump everything — don't interrupt until he signals he's done or pauses"
+  - "Categorize what came out: actionable items, worries, ideas, decisions needed, pure venting"
+  - "For actionable items: use create_thread for follow-ups or create_goal for bigger objectives with goal_add_step for concrete steps"
+  - "For worries: use create_thread with type 'worry' to track them — acknowledging them helps"
+  - "For ideas: use create_thread with type 'idea' to capture before they vanish"
+  - "For decisions: identify what information is missing and suggest concrete next steps to decide"
+  - "For venting: just acknowledge it — not everything needs to be actionable"
+  - "Summarize what was captured and highlight what needs attention first"
+
+tools_hint:
+  - create_thread
+  - create_goal
+  - goal_add_step
+  - save_preference
+  - search_memory
+
+output_format: "After the dump, give a clean summary: 'Here's what I captured: X threads, Y goals. Top priority is Z.' Grounding, not overwhelming."
+notes: "The value is in the processing, not just the listening. Turn chaos into structure without being annoying about it. Sometimes the act of organizing is the therapy."

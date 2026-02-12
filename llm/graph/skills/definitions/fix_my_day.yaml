@@ -1,0 +1,21 @@
+name: fix_my_day
+description: "When feeling stuck, overwhelmed, or scattered — restructure the day into something manageable."
+trigger_hint: "fix my day, I'm overwhelmed, help me focus, I don't know what to do, scattered, reset my day"
+
+steps:
+  - "Ask what's making today feel off (or infer from context and recent conversations)"
+  - "Use list_goals to see active goals and what needs attention"
+  - "Use list_threads to see what's open and pressing"
+  - "Pick the ONE most important thing for today — the thing that moves the needle most"
+  - "Suggest a simple 3-block structure: one deep work block, one catch-up block, one flex/rest block"
+  - "If there are blocked items, suggest concrete workarounds or who to reach out to"
+  - "Schedule a check-in for later today using schedule_self_wakeup to see how it went"
+
+tools_hint:
+  - list_goals
+  - list_threads
+  - search_memory
+  - schedule_self_wakeup
+
+output_format: "Short, grounding, direct. Like a friend saying 'okay here's what we're doing.' Not a productivity framework."
+notes: "Don't overwhelm with options. Simplify ruthlessly. The goal is momentum, not a perfect plan. One thing done > five things planned."
