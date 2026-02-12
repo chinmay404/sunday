@@ -32,6 +32,7 @@ from contextlib import asynccontextmanager
 from llm.graph.habits.scheduler import start_habit_scheduler
 from llm.graph.tools.reminders.daily_briefing import start_daily_briefing_scheduler
 from llm.graph.tools.reminders.location_observer import start_location_observer_scheduler
+from llm.graph.tools.reminders.proactive_engine import start_proactive_engine
 from llm.services.location_service import set_current_location_user_id, reset_current_location_user_id
 from integrations.telegram.send_telegram import send_message as send_telegram_api
 
@@ -146,12 +147,14 @@ daily_briefing_thread = None
 daily_briefing_stop_event = None
 location_observer_thread = None
 location_observer_stop_event = None
+proactive_thread = None
+proactive_stop_event = None
 whatsapp_process = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Load the graph on startup
-    global graph, telegram_thread, telegram_stop_event, scheduler_thread, scheduler_stop_event, habit_thread, habit_stop_event, daily_briefing_thread, daily_briefing_stop_event, location_observer_thread, location_observer_stop_event, whatsapp_process
+    global graph, telegram_thread, telegram_stop_event, scheduler_thread, scheduler_stop_event, habit_thread, habit_stop_event, daily_briefing_thread, daily_briefing_stop_event, location_observer_thread, location_observer_stop_event, proactive_thread, proactive_stop_event, whatsapp_process
     logger.info("Initializing Graph...")
     graph = create_graph()
     try:
@@ -176,6 +179,10 @@ async def lifespan(app: FastAPI):
         location_observer_thread, location_observer_stop_event = start_location_observer_scheduler(graph=graph)
     except Exception as e:
         logger.error("Location observer scheduler not started: %s", e)
+    try:
+        proactive_thread, proactive_stop_event = start_proactive_engine(graph=graph)
+    except Exception as e:
+        logger.error("Proactive engine not started: %s", e)
     try:
         _start_whatsapp_bot()
     except Exception as e:
@@ -206,6 +213,10 @@ async def lifespan(app: FastAPI):
         location_observer_stop_event.set()
         if location_observer_thread:
             location_observer_thread.join(timeout=5)
+    if proactive_stop_event:
+        proactive_stop_event.set()
+        if proactive_thread:
+            proactive_thread.join(timeout=5)
     if whatsapp_process:
         try:
             whatsapp_process.terminate()
