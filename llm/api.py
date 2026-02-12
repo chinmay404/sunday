@@ -33,6 +33,8 @@ from llm.graph.habits.scheduler import start_habit_scheduler
 from llm.graph.tools.reminders.daily_briefing import start_daily_briefing_scheduler
 from llm.graph.tools.reminders.location_observer import start_location_observer_scheduler
 from llm.graph.tools.reminders.proactive_engine import start_proactive_engine
+from llm.graph.memory.reflection import start_reflection_engine
+from llm.graph.memory.world_model import init_world_model
 from llm.services.location_service import set_current_location_user_id, reset_current_location_user_id
 from integrations.telegram.send_telegram import send_message as send_telegram_api
 
@@ -149,14 +151,21 @@ location_observer_thread = None
 location_observer_stop_event = None
 proactive_thread = None
 proactive_stop_event = None
+reflection_thread = None
+reflection_stop_event = None
 whatsapp_process = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Load the graph on startup
-    global graph, telegram_thread, telegram_stop_event, scheduler_thread, scheduler_stop_event, habit_thread, habit_stop_event, daily_briefing_thread, daily_briefing_stop_event, location_observer_thread, location_observer_stop_event, proactive_thread, proactive_stop_event, whatsapp_process
+    global graph, telegram_thread, telegram_stop_event, scheduler_thread, scheduler_stop_event, habit_thread, habit_stop_event, daily_briefing_thread, daily_briefing_stop_event, location_observer_thread, location_observer_stop_event, proactive_thread, proactive_stop_event, reflection_thread, reflection_stop_event, whatsapp_process
     logger.info("Initializing Graph...")
     graph = create_graph()
+    # Initialize world model tables
+    try:
+        init_world_model()
+    except Exception as e:
+        logger.error("World model init failed: %s", e)
     try:
         from integrations.telegram.run_bot import start_polling
         telegram_thread, telegram_stop_event = start_polling(graph=graph)
@@ -183,6 +192,10 @@ async def lifespan(app: FastAPI):
         proactive_thread, proactive_stop_event = start_proactive_engine(graph=graph)
     except Exception as e:
         logger.error("Proactive engine not started: %s", e)
+    try:
+        reflection_thread, reflection_stop_event = start_reflection_engine()
+    except Exception as e:
+        logger.error("Reflection engine not started: %s", e)
     try:
         _start_whatsapp_bot()
     except Exception as e:
@@ -217,6 +230,10 @@ async def lifespan(app: FastAPI):
         proactive_stop_event.set()
         if proactive_thread:
             proactive_thread.join(timeout=5)
+    if reflection_stop_event:
+        reflection_stop_event.set()
+        if reflection_thread:
+            reflection_thread.join(timeout=5)
     if whatsapp_process:
         try:
             whatsapp_process.terminate()
@@ -235,6 +252,7 @@ def health_check():
         "telegram": telegram_thread is not None and telegram_thread.is_alive() if telegram_thread else False,
         "scheduler": scheduler_thread is not None and scheduler_thread.is_alive() if scheduler_thread else False,
         "proactive_engine": proactive_thread is not None and proactive_thread.is_alive() if proactive_thread else False,
+        "reflection_engine": reflection_thread is not None and reflection_thread.is_alive() if reflection_thread else False,
     }
     return status
 

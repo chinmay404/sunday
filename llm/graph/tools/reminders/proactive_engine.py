@@ -145,6 +145,9 @@ def _gather_situation(chat_id: str, tzinfo, time_manager) -> dict:
         "open_commitments": [],
         "recent_actions": [],
         "had_activity_today": False,
+        "reflection_impulses": [],
+        "unresolved_threads": [],
+        "world_model_vibe": {},
     }
 
     # ── Last seen ──
@@ -200,6 +203,26 @@ def _gather_situation(chat_id: str, tzinfo, time_manager) -> dict:
                         continue
         except Exception as exc:
             logger.debug("Proactive: calendar check failed: %s", exc)
+
+    # ── Reflection impulses + world model (from night reflection) ──
+    try:
+        from llm.graph.memory.world_model import get_state
+        impulses_entry = get_state("proactive_impulses")
+        if impulses_entry and impulses_entry.get("value"):
+            situation["reflection_impulses"] = impulses_entry["value"]
+
+        threads_entry = get_state("unresolved_threads")
+        if threads_entry and threads_entry.get("value"):
+            situation["unresolved_threads"] = threads_entry["value"]
+
+        # Grab a few world model keys for extra context
+        for wm_key in ("current_mood", "energy_read", "working_on", "latest_pattern",
+                        "current_opinion", "yesterday_digest", "tomorrow_awareness"):
+            entry = get_state(wm_key)
+            if entry and entry.get("value"):
+                situation["world_model_vibe"][wm_key] = entry["value"]
+    except Exception as exc:
+        logger.debug("Proactive: world model read failed: %s", exc)
 
     return situation
 
@@ -411,6 +434,53 @@ def run_proactive_engine(
                         "If it doesn't feel right, respond with 'skip'."
                     )
                     _invoke_and_send(graph, chat_id, msg, platform="proactive_evening")
+
+            # ── 5. Reflection impulses (from night thinking) ────────
+            impulses = situation.get("reflection_impulses", [])
+            for impulse in impulses:
+                if not isinstance(impulse, dict):
+                    continue
+                impulse_text = impulse.get("impulse", "")
+                impulse_when = impulse.get("when", "whenever").lower()
+                impulse_intensity = impulse.get("intensity", "medium").lower()
+                impulse_reason = impulse.get("reason", "")
+
+                # Match time of day roughly
+                hour = now.hour
+                time_match = (
+                    impulse_when == "whenever"
+                    or (impulse_when == "morning" and 8 <= hour < 12)
+                    or (impulse_when == "afternoon" and 12 <= hour < 17)
+                    or (impulse_when == "evening" and 17 <= hour < 23)
+                )
+                if not time_match:
+                    continue
+
+                trigger_key = f"impulse_{impulse_text[:40]}"
+                if _claim_trigger(chat_id, trigger_key, today):
+                    # Build rich context for the LLM
+                    vibe_bits = ""
+                    wm = situation.get("world_model_vibe", {})
+                    if wm:
+                        vibe_bits = " Your current read: " + "; ".join(
+                            f"{k}={v}" for k, v in list(wm.items())[:4]
+                        )
+                    threads_bits = ""
+                    threads = situation.get("unresolved_threads", [])
+                    if threads:
+                        threads_bits = f" Unresolved threads: {', '.join(str(t) for t in threads[:3])}."
+
+                    msg = (
+                        f"Last night while thinking, you had this impulse: '{impulse_text}'. "
+                        f"Reason: {impulse_reason}. Intensity: {impulse_intensity}.{vibe_bits}{threads_bits} "
+                        "Now it's daytime. Decide if this still feels right. "
+                        "If yes, act on it naturally — text him like a real person would. "
+                        "Be unpredictable. Don't be generic. "
+                        "If it doesn't feel right anymore, respond with 'skip'."
+                    )
+                    _invoke_and_send(graph, chat_id, msg, platform="proactive_impulse")
+                    time.sleep(3)
+                    break  # max 1 impulse per cycle
 
         except Exception as exc:
             logger.error("Proactive engine cycle error: %s", exc)

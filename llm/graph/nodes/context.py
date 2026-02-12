@@ -146,7 +146,16 @@ def context_gathering_node(state: ChatState):
         context_parts.append(semantic_result)
     if episodic_result:
         context_parts.append(episodic_result)
-            
+
+    # 4. World model (Sunday's persistent inner understanding + private thoughts)
+    try:
+        from llm.graph.memory.world_model import render_for_prompt
+        world_ctx = render_for_prompt()
+        if world_ctx:
+            context_parts.append(world_ctx)
+    except Exception as e:
+        logger.error("Error loading world model: %s", e)
+
     final_context = "\n\n".join(context_parts)
     
     if final_context:

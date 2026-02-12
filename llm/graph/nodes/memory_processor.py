@@ -347,6 +347,14 @@ You MUST return JSON with ALL these fields:
                    len(result.people or []),
                    len(result.preferences or []),
                    len(result.new_relationships or []))
+
+        # ── 5. Live World Model Update (1 cheap Groq call) ──
+        # Sunday's inner understanding shifts after every real conversation.
+        # This runs in the background — doesn't block response.
+        if not state.get("skip_action_log"):
+            f = executor.submit(_update_world_model_live, interaction_text)
+            f.add_done_callback(_log_future_error)
+
     except Exception as e:
         logger.error("Error in memory processing: %s", e)
 
@@ -391,3 +399,71 @@ def _store_preference_entity(category: str, key: str, value: str, sentiment: str
         logger.info("⭐ [Preference Entity] Stored: %s = %s (%s)", key, value, sentiment)
     except Exception as e:
         logger.error("Error storing preference entity: %s", e)
+
+
+# ── Live World Model Updater ──────────────────────────────────────────────
+
+_WORLD_MODEL_UPDATE_PROMPT = """You are Sunday's subconscious — running instantly after a conversation.
+Given this exchange, decide if Sunday's inner understanding of Chinmay should shift.
+
+You're looking for:
+- Mood/energy shifts ("he seems tired", "he's hyped about something")
+- Focus changes ("he's working on X now", "he dropped Y")
+- Relationship signals ("he mentioned someone new", "he's annoyed at someone")
+- Commitment changes ("he said he'd do X", "he finished Y")
+- Emotional undercurrents ("he's stressed but hiding it", "he's avoiding something")
+- Anything that changes your mental model of what's going on in his life
+
+If NOTHING meaningful shifted (just small talk, greetings, simple queries), return:
+{"updates": {}, "thought": null}
+
+If something DID shift, return:
+{"updates": {"any_dynamic_key": "value"}, "thought": "your private reaction — be honest, be messy"}
+
+Keys are FREEFORM. Examples: "current_mood", "energy_read", "working_on", "avoiding", "relationship_tension",
+"excitement_about", "bullshit_level", "needs_push", "needs_space" — whatever feels right. BE CREATIVE.
+Respond with ONLY valid JSON. No markdown, no explanation."""
+
+
+def _update_world_model_live(interaction_text: str):
+    """Background: update world model after each conversation. Uses 1 cheap Groq call."""
+    try:
+        from llm.graph.memory.world_model import bulk_set, add_thought, init_world_model
+
+        init_world_model()  # ensure tables exist (no-op if already exist)
+
+        llm = get_cheap_llm(temperature=0.4)
+        if not llm:
+            return
+
+        truncated = truncate_text(interaction_text, 3000)
+        result = llm.invoke([
+            SystemMessage(content=_WORLD_MODEL_UPDATE_PROMPT),
+            HumanMessage(content=truncated),
+        ])
+
+        raw = extract_text(result.content)
+        # Parse JSON
+        text = raw.strip()
+        if text.startswith("```"):
+            text = text.split("```", 1)[1]
+            if text.startswith("json"):
+                text = text[4:]
+            text = text.split("```", 1)[0]
+
+        parsed = json.loads(text.strip())
+
+        updates = parsed.get("updates", {})
+        if updates and isinstance(updates, dict):
+            bulk_set(updates, source="live_conversation")
+            logger.info("🧠 [WorldModel] Live update: %s", list(updates.keys()))
+
+        thought = parsed.get("thought")
+        if thought and isinstance(thought, str) and thought.strip():
+            add_thought(thought=thought, mood="reactive", source="live_conversation", ttl_hours=24.0)
+            logger.info("💭 [WorldModel] Live thought: %s", thought[:100])
+
+    except json.JSONDecodeError:
+        logger.debug("WorldModel live update: non-JSON response, skipping")
+    except Exception as exc:
+        logger.error("WorldModel live update failed: %s", exc)
