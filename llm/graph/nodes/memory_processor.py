@@ -24,6 +24,13 @@ SUMMARY_WINDOW_TURNS = int(os.getenv("SUMMARY_WINDOW_TURNS", "10"))
 # Reusable thread pool for background memory writes (avoid creating per-call)
 _memory_executor = concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="memory")
 
+def _log_future_error(fut: concurrent.futures.Future):
+    """Callback attached to every memory write future to log silent failures."""
+    try:
+        fut.result()  # raises if the task raised
+    except Exception as exc:
+        logger.error("💥 [Memory write failed] %s: %s", type(exc).__name__, exc)
+
 # Initialize Memories
 try:
     episodic_memory = EpisodicMemory()
@@ -127,8 +134,13 @@ def memory_processing_node(state: ChatState):
             if llm:
                 try:
                     prompt = (
-                        "Summarize the recent conversation concisely. Capture intents, decisions, and follow-ups. "
-                        "Keep it short and actionable."
+                        "Summarize this conversation. You MUST preserve:\n"
+                        "1) All names, dates, and numbers mentioned\n"
+                        "2) All commitments, decisions, and action items\n"
+                        "3) Any emotional state (stressed, happy, tired, frustrated)\n"
+                        "4) Topics the user wants to return to\n"
+                        "5) Any tool actions taken (reminders set, messages sent, events created)\n"
+                        "Be concise but NEVER drop specifics. 3-5 sentences max."
                     )
                     summary_text = extract_text(llm.invoke([
                         SystemMessage(content=prompt),
@@ -259,22 +271,24 @@ You MUST return JSON with ALL these fields:
                     for person in result.people:
                         logger.info("👤 [Neo4j] Adding person: %s (%s) - %s", 
                                    person.name, person.category, person.relation_to_chinmay)
-                        executor.submit(
+                        f = executor.submit(
                             pg.add_person,
                             person.name,
                             person.relation_to_chinmay,
                             person.category,
                             person.notes
                         )
+                        f.add_done_callback(_log_future_error)
                         # Also store in semantic memory for vector search
                         if semantic_memory:
-                            executor.submit(
+                            f2 = executor.submit(
                                 semantic_memory.add_relationship,
                                 "Chinmay", "person",
                                 person.relation_to_chinmay,
                                 person.name, "person",
                                 1.0
                             )
+                            f2.add_done_callback(_log_future_error)
 
             # ── 2. Store Preferences in Semantic Memory ──
             if result.preferences and semantic_memory:
@@ -285,30 +299,33 @@ You MUST return JSON with ALL these fields:
                     relation = "prefers" if pref.sentiment == "positive" else (
                         "dislikes" if pref.sentiment == "negative" else "fact"
                     )
-                    executor.submit(
+                    f = executor.submit(
                         semantic_memory.add_relationship,
                         "Chinmay", "person",
                         relation,
                         f"{pref.key}: {pref.value}", "preference",
                         0.95
                     )
+                    f.add_done_callback(_log_future_error)
                     # Also store as enriched entity with attributes
-                    executor.submit(
+                    f2 = executor.submit(
                         _store_preference_entity,
                         pref.category, pref.key, pref.value, pref.sentiment
                     )
+                    f2.add_done_callback(_log_future_error)
 
             # ── 3. Store Semantic Graph Relationships ──
             if result.new_relationships and semantic_memory:
                 for rel in result.new_relationships:
                     logger.info("🧠 [Graph] %s --%s--> %s", rel.from_entity, rel.relation, rel.to_entity)
-                    executor.submit(
+                    f = executor.submit(
                         semantic_memory.add_relationship,
                         rel.from_entity, rel.from_type,
                         rel.relation,
                         rel.to_entity, rel.to_type,
                         rel.confidence
                     )
+                    f.add_done_callback(_log_future_error)
             
             # ── 4. Store Episodic Memories ──
             if result.episodic_content and episodic_memory:
@@ -316,11 +333,11 @@ You MUST return JSON with ALL these fields:
                 logger.info("📖 [Episodic] %s %s", result.episodic_content, expiry_msg)
                 executor.submit(
                     episodic_memory.add_memory,
-                    result.episodic_content,
-                    result.episodic_importance or 0.5,
-                    "user",
-                    result.episodic_tags or [],
-                    result.episodic_expiry_days
+                    content=result.episodic_content,
+                    importance=result.episodic_importance or 0.5,
+                    role="user",
+                    tags=result.episodic_tags or [],
+                    expiry_days=result.episodic_expiry_days,
                 )
         except Exception as pool_exc:
             logger.error("Error submitting memory writes: %s", pool_exc)

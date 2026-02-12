@@ -183,3 +183,70 @@ class TimeManager:
             return f"Task created: {task.content}"
         except Exception as e:
             return f"Failed to create task: {e}"
+
+    def list_events(self, days_ahead: int = 2):
+        """List upcoming calendar events for the next N days."""
+        if not self.service:
+            return "Google Calendar not connected."
+        try:
+            now = datetime.datetime.now().astimezone()
+            time_min = now.isoformat()
+            time_max = (now + timedelta(days=days_ahead)).isoformat()
+            events_result = self.service.events().list(
+                calendarId='primary', timeMin=time_min, timeMax=time_max,
+                maxResults=20, singleEvents=True, orderBy='startTime'
+            ).execute()
+            events = events_result.get('items', [])
+            if not events:
+                return f"No events in the next {days_ahead} day(s)."
+            lines = []
+            for ev in events:
+                start = ev['start'].get('dateTime', ev['start'].get('date'))
+                end = ev['end'].get('dateTime', ev['end'].get('date', ''))
+                summary = ev.get('summary', 'No Title')
+                event_id = ev.get('id', '')
+                lines.append(f"• {summary} | {start} → {end} | ID: {event_id}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Failed to list events: {e}"
+
+    def delete_event(self, event_id: str):
+        """Delete a calendar event by ID."""
+        if not self.service:
+            return "Google Calendar not connected."
+        try:
+            self.service.events().delete(calendarId='primary', eventId=event_id).execute()
+            return f"Event {event_id} deleted."
+        except Exception as e:
+            return f"Failed to delete event: {e}"
+
+    def list_tasks(self, filter_str: str = "today | overdue"):
+        """List Todoist tasks with optional filter."""
+        if not self.todoist:
+            return "Todoist not connected."
+        try:
+            tasks = self.todoist.get_tasks(filter=filter_str)
+            if not tasks:
+                return "No tasks matching that filter."
+            lines = []
+            for task in tasks:
+                content = getattr(task, "content", "Unknown")
+                task_id = getattr(task, "id", "")
+                due_obj = getattr(task, "due", None)
+                due_str = getattr(due_obj, "date", "No date") if due_obj else "No date"
+                priority = getattr(task, "priority", 1)
+                p_label = {4: "🔴", 3: "🟠", 2: "🟡"}.get(priority, "")
+                lines.append(f"• {p_label}{content} | due: {due_str} | ID: {task_id}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Failed to list tasks: {e}"
+
+    def complete_task(self, task_id: str):
+        """Complete a Todoist task by ID."""
+        if not self.todoist:
+            return "Todoist not connected."
+        try:
+            self.todoist.close_task(task_id=task_id)
+            return f"Task {task_id} completed ✓"
+        except Exception as e:
+            return f"Failed to complete task: {e}"

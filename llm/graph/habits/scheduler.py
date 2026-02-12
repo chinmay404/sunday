@@ -76,6 +76,23 @@ def run_habit_scheduler(
         print("Habit analyzer disabled via HABIT_ANALYZER_ENABLE.")
         return
 
+    # Run episodic memory cleanup once at startup, then daily
+    _last_cleanup = [0.0]  # mutable container for closure
+    CLEANUP_INTERVAL = 86400  # 24 hours
+
+    def _maybe_cleanup_memories():
+        now_ts = time.time()
+        if now_ts - _last_cleanup[0] >= CLEANUP_INTERVAL:
+            try:
+                from llm.graph.memory.episodic_memeory import EpisodicMemory
+                em = EpisodicMemory()
+                deleted = em.cleanup_memories(threshold=0.05)
+                if deleted:
+                    print(f"🧹 Episodic cleanup: removed {deleted} decayed/expired memories")
+                _last_cleanup[0] = now_ts
+            except Exception as exc:
+                print(f"Episodic cleanup error: {exc}")
+
     notify = _should_notify()
     telegram_token = os.getenv("TELEGRAM_API_TOKEN") if notify else None
     default_chat_id = os.getenv("TELEGRAM_CHAT_ID") if notify else None
@@ -84,6 +101,8 @@ def run_habit_scheduler(
         if stop_event and stop_event.is_set():
             print("Habit analyzer stopping...")
             break
+
+        _maybe_cleanup_memories()
 
         now = datetime.now(timezone.utc)
         inactivity_delta = timedelta(hours=inactivity_hours)

@@ -226,6 +226,18 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan, title="Sunday Chat API")
 
+@app.get("/health")
+def health_check():
+    """Quick health check — verifies graph + key services are alive."""
+    status = {
+        "status": "ok" if graph else "degraded",
+        "graph": graph is not None,
+        "telegram": telegram_thread is not None and telegram_thread.is_alive() if telegram_thread else False,
+        "scheduler": scheduler_thread is not None and scheduler_thread.is_alive() if scheduler_thread else False,
+        "proactive_engine": proactive_thread is not None and proactive_thread.is_alive() if proactive_thread else False,
+    }
+    return status
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Allows all origins

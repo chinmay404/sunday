@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
 from llm.graph.states.state import ChatState
 from llm.graph.model.llm import get_llm
 from llm.graph.tools.manager import ALL_TOOLS
@@ -56,9 +56,11 @@ def agent_node(state: ChatState):
             latest_summary = msg
             break
 
-    # Keep only the last 5 human/AI messages to reduce prompt bloat.
-    human_ai = [m for m in messages if isinstance(m, (HumanMessage, AIMessage))]
-    window = human_ai[-5:]
+    # Keep the last 15 human/AI/tool messages to preserve context.
+    # ToolMessages MUST be kept alongside the AIMessage that triggered them,
+    # otherwise the LLM sees a tool_call with no result and hallucinates.
+    human_ai = [m for m in messages if isinstance(m, (HumanMessage, AIMessage, ToolMessage))]
+    window = human_ai[-15:]
 
     # Determine current speaker from state (set by Telegram/API layer)
     current_speaker = state.get("user_name") or ""

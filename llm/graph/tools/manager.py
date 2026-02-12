@@ -12,12 +12,18 @@ from .whatsapp import (
     whatsapp_set_busy_mode,
     whatsapp_list_pending,
     whatsapp_approve_pending,
+    whatsapp_reply_pending,
+    whatsapp_reject_pending,
+    add_to_whitelist,
+    get_whitelist,
 )
 from .telegram_tool import send_telegram_message
 from .location_tools import (
     location_current_status,
     location_remember_place,
     location_list_places,
+    location_forget_place,
+    location_current_address,
 )
 from .notion_tool import (
     notion_create_note,
@@ -43,12 +49,15 @@ def get_all_tools():
     # Reminders & wake-ups
     tools.extend([create_reminder, list_reminders, cancel_reminder, schedule_self_wakeup])
 
-    # WhatsApp (send, contacts, busy mode, pending queue)
+    # WhatsApp (send, contacts, busy mode, pending queue, whitelist)
     tools.extend([send_whatsapp_message, lookup_contact,
-                  whatsapp_set_busy_mode, whatsapp_list_pending, whatsapp_approve_pending])
+                  whatsapp_set_busy_mode, whatsapp_list_pending, whatsapp_approve_pending,
+                  whatsapp_reply_pending, whatsapp_reject_pending,
+                  add_to_whitelist, get_whitelist])
 
-    # Location (status, save/list places)
-    tools.extend([location_current_status, location_remember_place, location_list_places])
+    # Location (status, save/list/delete places, address)
+    tools.extend([location_current_status, location_remember_place, location_list_places,
+                  location_forget_place, location_current_address])
 
     # Telegram
     tools.append(send_telegram_message)
